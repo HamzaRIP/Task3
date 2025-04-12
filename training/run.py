@@ -21,15 +21,16 @@ try:
     )
 except ImportError:
     # Default values if import fails
-    BATCH_SIZE = 1024
-    LEARNING_RATE = 3e-4
-    GAMMA = 0.99
-    LAMBDA = 0.95
-    KL_COEFF = 0.2
-    CLIP_PARAM = 0.2
-    VF_CLIP_PARAM = 10.0
-    ENTROPY_COEFF = 0.01
-    NUM_SGD_ITER = 10
+    # BATCH_SIZE = 1024
+    # LEARNING_RATE = 3e-4
+    # GAMMA = 0.99
+    # LAMBDA = 0.95
+    # KL_COEFF = 0.2
+    # CLIP_PARAM = 0.2
+    # VF_CLIP_PARAM = 10.0
+    # ENTROPY_COEFF = 0.01
+    # NUM_SGD_ITER = 10
+    raise ImportError("Neural network parameters not found")
 
 def save_nn_params(save_dir):
     """
