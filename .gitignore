@@ -1,4 +1,5 @@
 .venv
+__pycache__
 
 # Not sure if we want to exclude results? Will do for now.
 results/
