@@ -4,11 +4,11 @@ from pathlib import Path
 import numpy as np
 import torch
 from typing import Callable
+import matplotlib.pyplot as plt
 
 from pettingzoo.utils import BaseWrapper
 from pettingzoo.utils.env import AgentID, ObsType
 from ray.rllib.algorithms.ppo import PPOConfig
-# Update import to use the recommended module instead of the deprecated one
 from ray.rllib.algorithms.ppo.torch.default_ppo_torch_rl_module import DefaultPPOTorchRLModule
 from ray.rllib.core.rl_module import RLModule, MultiRLModule
 from ray.rllib.core.rl_module import MultiRLModuleSpec, RLModuleSpec
@@ -19,6 +19,18 @@ import supersuit as ss
 
 # Import from local utils.py file
 from utils import create_environment
+# Import our training monitor
+from training.training_monitor import setup_training_monitor
+
+BATCH_SIZE = 1024      # No. steps collected for training in each batch, larger batches provide more stable gradients.
+LEARNING_RATE = 3e-4   # Gradient update step size, controls how quickly the neural network weights are adjusted.
+GAMMA = 0.99           # Discount factor for future rewards, values closer to 1 place more importance on long-term rewards.
+LAMBDA = 0.95          # GAE (Generalized Advantage Estimation) parameter, controls bias-variance tradeoff in advantage estimation.
+KL_COEFF = 0.2         # Coeff for KL divergence penalty, prevents policy updates from changing too drastically from previous policy.
+CLIP_PARAM = 0.2       # PPO clipping parameter, limits policy ratio to prevent too large policy updates.
+VF_CLIP_PARAM = 10.0   # Value function clipping parameter, limits how much the value function estimates can change per update.
+ENTROPY_COEFF = 0.01   # Coeff for entropy bonus, encourages exploration by rewarding policies with higher action entropy.
+NUM_SGD_ITER = 10      # No. SGD passes over the training data, determines how many times each batch is reused for optimization.
 
 class ArcherWrapper(BaseWrapper):
     """
@@ -98,23 +110,26 @@ def algo_config(id_env, policies, policies_to_train):
                 },
             )
         )
+
+
+
         .training(
-            train_batch_size=1024,  # Larger batch size for more stable training
-            lr=3e-4,  # Slightly higher learning rate
-            gamma=0.99,  # Discount factor
-            lambda_=0.95,  # GAE parameter
-            kl_coeff=0.2,
-            clip_param=0.2,
-            vf_clip_param=10.0,
-            entropy_coeff=0.01,  # Encourage exploration
-            num_sgd_iter=10,  # More SGD iterations per batch
+            train_batch_size=BATCH_SIZE,  # Larger batch size for more stable training
+            lr=LEARNING_RATE,  # Slightly higher learning rate
+            gamma=GAMMA,  # Discount factor
+            lambda_=LAMBDA,  # GAE parameter
+            kl_coeff=KL_COEFF,
+            clip_param=CLIP_PARAM,
+            vf_clip_param=VF_CLIP_PARAM,
+            entropy_coeff=ENTROPY_COEFF,
+            num_sgd_iter=NUM_SGD_ITER,  # More SGD iterations per batch
             # Removed sgd_minibatch_size as it's not supported in this version
         )
         .debugging(log_level="ERROR")
     )
     return config
 
-def train_archer_agent(env, checkpoint_path, max_iterations=1000):
+def train_archer_agent(env, checkpoint_path, max_iterations=1000, plot_dir="./training_plots"):
     """
     Train the archer agent using PPO.
     
@@ -122,10 +137,14 @@ def train_archer_agent(env, checkpoint_path, max_iterations=1000):
         env: PettingZoo environment
         checkpoint_path: Path to save checkpoints
         max_iterations: Maximum number of training iterations
+        plot_dir: Directory to save training plots
         
     Returns:
         Trained algorithm
     """
+    # Set up training monitor
+    monitor = setup_training_monitor(save_dir=plot_dir, log_interval=1, live_plot=True)
+    
     # Convert AEC environment to parallel for RLlib
     rllib_env = ParallelPettingZooEnv(pettingzoo.utils.conversions.aec_to_parallel(env))
     id_env = "knights_archers_zombies_v10"
@@ -147,12 +166,17 @@ def train_archer_agent(env, checkpoint_path, max_iterations=1000):
     print("Starting training...")
     for i in range(max_iterations):
         result = algo.train()
-        result.pop("config")
+        result.pop("config", None)
         
-        # Log training progress
+        # Extract training metrics
+        metrics = {}
         if "env_runners" in result and "agent_episode_returns_mean" in result["env_runners"]:
+            metrics["agent_returns"] = result["env_runners"]["agent_episode_returns_mean"]
             mean_reward = result["env_runners"]["agent_episode_returns_mean"]["archer_0"]
             print(f"Iteration {i}, Mean Reward: {mean_reward}")
+            
+            # Update training monitor
+            monitor.update(i, metrics)
             
             # Save checkpoint if performance improves
             if mean_reward > best_reward:
@@ -165,12 +189,19 @@ def train_archer_agent(env, checkpoint_path, max_iterations=1000):
             if mean_reward > 10:
                 print(f"Early stopping at iteration {i} with mean reward {mean_reward}")
                 break
+        else:
+            # If metrics are structured differently, create a default metric for plotting
+            default_metrics = {"agent_returns": {"archer_0": result.get("episode_reward_mean", 0)}}
+            monitor.update(i, default_metrics)
         
         # Regular checkpoint saving
         if i % 10 == 0:
             save_result = algo.save(checkpoint_path)
             path_to_checkpoint = save_result.checkpoint.path
             print(f"Checkpoint saved to: {path_to_checkpoint}")
+    
+    # Finalize monitor
+    monitor.finalize()
     
     print(f"Training completed. Best reward: {best_reward}")
     return algo
@@ -289,12 +320,13 @@ if __name__ == "__main__":
     # Apply custom wrapper
     env = ArcherWrapper(env)
     
-    # Set up checkpoint path
+    # Set up checkpoint path and plot directory
     checkpoint_path = str(Path("results").resolve())
+    plot_dir = str(Path("training_plots").resolve())
     
-    # Train the agent
+    # Train the agent with visualization
     print("Training agent...")
-    algo = train_archer_agent(env, checkpoint_path, max_iterations=500)
+    algo = train_archer_agent(env, checkpoint_path, max_iterations=500, plot_dir=plot_dir)
     
     # Evaluate the trained agent
     print("\nEvaluating trained agent...")
@@ -309,3 +341,14 @@ if __name__ == "__main__":
     print("\nComparison Results:")
     for strategy, reward in baseline_results.items():
         print(f"{strategy}: {reward}")
+    
+    # Generate and display final results plot
+    plt.figure(figsize=(10, 6))
+    strategies = list(baseline_results.keys())
+    rewards = [baseline_results[s] for s in strategies]
+    
+    plt.bar(strategies, rewards)
+    plt.ylabel('Mean Reward')
+    plt.title('Strategy Comparison')
+    plt.savefig(f"{plot_dir}/strategy_comparison.png")
+    plt.show()
