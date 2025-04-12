@@ -17,3 +17,8 @@ from the root directory, run:
 
 eg:
 `python training/run.py --max-iterations 500 --num-agents 1 --max-zombies 10`
+
+
+## Output
+
+The training session will be given a unique ID and data (including graphs and NN params) will be saved under training/training_plots/ID.
