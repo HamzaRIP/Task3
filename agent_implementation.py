@@ -23,7 +23,7 @@ from utils import create_environment
 from training.training_monitor import setup_training_monitor
 
 BATCH_SIZE = 1024      # No. steps collected for training in each batch, larger batches provide more stable gradients.
-LEARNING_RATE = 3e-4   # Gradient update step size, controls how quickly the neural network weights are adjusted.
+LEARNING_RATE = 1e-3   # Gradient update step size, controls how quickly the neural network weights are adjusted.
 GAMMA = 0.99           # Discount factor for future rewards, values closer to 1 place more importance on long-term rewards.
 LAMBDA = 0.95          # GAE (Generalized Advantage Estimation) parameter, controls bias-variance tradeoff in advantage estimation.
 KL_COEFF = 0.2         # Coeff for KL divergence penalty, prevents policy updates from changing too drastically from previous policy.
@@ -186,9 +186,9 @@ def train_archer_agent(env, checkpoint_path, max_iterations=1000, plot_dir="./tr
                 print(f"New best reward: {best_reward}, saved checkpoint to: {path_to_checkpoint}")
             
             # Early stopping if performance is good enough
-            if mean_reward > 10:
-                print(f"Early stopping at iteration {i} with mean reward {mean_reward}")
-                break
+            # if mean_reward > 10:
+            #     print(f"Early stopping at iteration {i} with mean reward {mean_reward}")
+            #     break
         else:
             # If metrics are structured differently, create a default metric for plotting
             default_metrics = {"agent_returns": {"archer_0": result.get("episode_reward_mean", 0)}}
@@ -236,7 +236,15 @@ def evaluate_agent(env, num_episodes=10):
             
             env.step(action)
             
-            if all(termination or truncation for _, termination, truncation, _ in env.last()):
+            # Check if episode is done (all agents are done)
+            all_done = True
+            for a in env.agents:
+                _, _, term, trunc, _ = env.last(a)
+                if not (term or trunc):
+                    all_done = False
+                    break
+                    
+            if all_done:
                 break
         
         # Calculate episode reward
@@ -289,7 +297,15 @@ def compare_with_baselines(env, trained_agent, num_episodes=10):
                 
                 env.step(action)
                 
-                if all(termination or truncation for _, termination, truncation, _ in env.last()):
+                # Check if episode is done (all agents are done)
+                all_done = True
+                for a in env.agents:
+                    _, _, term, trunc, _ = env.last(a)
+                    if not (term or trunc):
+                        all_done = False
+                        break
+                        
+                if all_done:
                     break
             
             # Calculate episode reward
@@ -302,6 +318,7 @@ def compare_with_baselines(env, trained_agent, num_episodes=10):
         print(f"{name} strategy: Mean reward over {num_episodes} episodes: {mean_reward}")
     
     return results
+
 
 if __name__ == "__main__":
     # Create the environment with a single archer
