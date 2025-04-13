@@ -53,8 +53,19 @@ class CustomWrapper(BaseWrapper):
         obs = super().observe(agent)
         if obs is None:
             return None
+
+        # Agent Position (assuming one)
+        agent_x, agent_y = obs[0, 1], obs[0, 2]
+
+        # Agent heading (assuming one)
+        agent_dx, agent_dy = obs[0, 3], obs[0, 4]
         
-        # Flatten the observation for easier processing by neural networks
+        # Zombie Archer Relative Position 
+        # Note: Up and left are negative, down and right are positive
+        zombie_archer_x, zombie_archer_y = obs[12, 1], obs[12, 2] 
+
+        print(f"Zombie Archer Relative Position: ({zombie_archer_x}, {zombie_archer_y})")
+
         flat_obs = obs.flatten()
         return flat_obs
 
