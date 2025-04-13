@@ -1,3 +1,6 @@
+import os
+os.environ["PYTHONWARNINGS"] = "ignore::DeprecationWarning"
+
 import gymnasium
 from gymnasium import spaces
 from pathlib import Path
@@ -5,6 +8,8 @@ import numpy as np
 import torch
 from typing import Callable
 import matplotlib.pyplot as plt
+
+
 
 from pettingzoo.utils import BaseWrapper
 from pettingzoo.utils.env import AgentID, ObsType
@@ -16,6 +21,7 @@ from ray.rllib.env.wrappers.pettingzoo_env import PettingZooEnv, ParallelPetting
 from ray.tune.registry import register_env
 import pettingzoo
 import supersuit as ss
+
 
 # Import from local utils.py file
 from utils import create_environment
@@ -32,14 +38,17 @@ VF_CLIP_PARAM = 10.0   # Value function clipping parameter, limits how much the 
 ENTROPY_COEFF = 0.01   # Coeff for entropy bonus, encourages exploration by rewarding policies with higher action entropy.
 NUM_SGD_ITER = 10      # No. SGD passes over the training data, determines how many times each batch is reused for optimization.
 
-class ArcherWrapper(BaseWrapper):
+class CustomWrapper(BaseWrapper):
     """
     Custom wrapper for the KAZ environment that flattens the observation space
     and adds feature engineering for better agent performance.
+    See: https://pettingzoo.farama.org/content/environment_creation/
     """
+    # Define the environment 
     def observation_space(self, agent: AgentID) -> gymnasium.spaces.Space:
         return spaces.flatten_space(super().observation_space(agent))
-    
+
+    # Define the observation
     def observe(self, agent: AgentID) -> ObsType | None:
         obs = super().observe(agent)
         if obs is None:
@@ -49,7 +58,7 @@ class ArcherWrapper(BaseWrapper):
         flat_obs = obs.flatten()
         return flat_obs
 
-class ArcherPredictFunction(Callable):
+class CustomPredictFunction(Callable):
     """
     Prediction function for the trained archer agent.
     Loads a trained RLLib algorithm from a checkpoint and extracts the policies.
@@ -70,17 +79,9 @@ class ArcherPredictFunction(Callable):
         action = action_dist.sample()[0].numpy()
         return action
 
-def algo_config(id_env, policies, policies_to_train):
+def algo_config(id_env, env, policies, policies_to_train):
     """
     Configure the PPO algorithm for training the archer agent.
-    
-    Args:
-        id_env: Environment ID
-        policies: List of policies (agents)
-        policies_to_train: List of policies to train
-        
-    Returns:
-        PPO configuration
     """
     config = (
         PPOConfig()
@@ -89,7 +90,7 @@ def algo_config(id_env, policies, policies_to_train):
             enable_env_runner_and_connector_v2=True,
         )
         .environment(env=id_env, disable_env_checking=True)
-        .env_runners(num_env_runners=2)  # Increase for parallel training
+        .env_runners(num_env_runners=2)
         .multi_agent(
             policies={x for x in policies},
             policy_mapping_fn=lambda agent_id, *args, **kwargs: agent_id,
@@ -98,11 +99,13 @@ def algo_config(id_env, policies, policies_to_train):
         .rl_module(
             rl_module_spec=MultiRLModuleSpec(
                 rl_module_specs={
-                    # Update to use DefaultPPOTorchRLModule instead of PPOTorchRLModule
                     x: RLModuleSpec(
-                        module_class=DefaultPPOTorchRLModule, 
+                        module_class=DefaultPPOTorchRLModule,
+                        observation_space=env.observation_space(x), 
+                        action_space=env.action_space(x),
+                        # Changed model_config_dict to model_config
                         model_config={
-                            "fcnet_hiddens": [128, 128],  # Larger network for better performance
+                            "fcnet_hiddens": [128, 128],
                             "fcnet_activation": "relu",
                         }
                     )
@@ -110,24 +113,22 @@ def algo_config(id_env, policies, policies_to_train):
                 },
             )
         )
-
-
-
         .training(
-            train_batch_size=BATCH_SIZE,  # Larger batch size for more stable training
-            lr=LEARNING_RATE,  # Slightly higher learning rate
-            gamma=GAMMA,  # Discount factor
-            lambda_=LAMBDA,  # GAE parameter
+            train_batch_size=BATCH_SIZE,
+            lr=LEARNING_RATE,
+            gamma=GAMMA,
+            lambda_=LAMBDA,
             kl_coeff=KL_COEFF,
             clip_param=CLIP_PARAM,
             vf_clip_param=VF_CLIP_PARAM,
             entropy_coeff=ENTROPY_COEFF,
-            num_sgd_iter=NUM_SGD_ITER,  # More SGD iterations per batch
-            # Removed sgd_minibatch_size as it's not supported in this version
+            num_epochs=NUM_SGD_ITER,
         )
         .debugging(log_level="ERROR")
     )
     return config
+
+# And when creating the algorithm:
 
 def train_archer_agent(env, checkpoint_path, max_iterations=1000, plot_dir="./training_plots"):
     """
@@ -157,10 +158,10 @@ def train_archer_agent(env, checkpoint_path, max_iterations=1000, plot_dir="./tr
     # Define the configuration for the PPO algorithm
     policies = [x for x in env.agents]
     policies_to_train = policies
-    config = algo_config(id_env, policies, policies_to_train)
+    config = algo_config(id_env, env, policies, policies_to_train)
     
     # Train the model
-    algo = config.build()
+    algo = config.build_algo()
     best_reward = -float('inf')
     
     print("Starting training...")
@@ -206,6 +207,10 @@ def train_archer_agent(env, checkpoint_path, max_iterations=1000, plot_dir="./tr
     print(f"Training completed. Best reward: {best_reward}")
     return algo
 
+#######################
+# TRAINING FUNCTIONS  #
+#######################
+
 def evaluate_agent(env, num_episodes=10):
     """
     Evaluate the trained agent.
@@ -218,7 +223,7 @@ def evaluate_agent(env, num_episodes=10):
         Mean reward across episodes
     """
     # Create a prediction function using the trained model
-    predict_fn = ArcherPredictFunction(env)
+    predict_fn = CustomPredictFunction(env)
     
     total_rewards = []
     for episode in range(num_episodes):
@@ -335,7 +340,7 @@ if __name__ == "__main__":
     )
     
     # Apply custom wrapper
-    env = ArcherWrapper(env)
+    env = CustomWrapper(env)
     
     # Set up checkpoint path and plot directory
     checkpoint_path = str(Path("results").resolve())
@@ -347,7 +352,7 @@ if __name__ == "__main__":
     
     # Evaluate the trained agent
     print("\nEvaluating trained agent...")
-    trained_agent = ArcherPredictFunction(env)
+    trained_agent = CustomPredictFunction(env)
     mean_reward = evaluate_agent(env, num_episodes=10)
     
     # Compare with baselines

@@ -1,4 +1,4 @@
-## Usage
+## Training
 
 from the root directory, run:
 
@@ -19,6 +19,18 @@ eg:
 `python training/run.py --max-iterations 500 --num-agents 1 --max-zombies 10`
 
 
-## Output
+### Output
 
 The training session will be given a unique ID and data (including graphs and NN params) will be saved under training/training_plots/ID.
+
+## Visualisation
+
+To visualise the agent, run:
+
+`python training/visualise.py`
+
+### Parameters:
+
+- `l`: Path to the agent file to load
+- `s`: Set render mode to human (show game)
+- `h`: See other parameters (help)

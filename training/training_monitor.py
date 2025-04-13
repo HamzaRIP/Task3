@@ -1,8 +1,9 @@
+import os
+os.environ["PYTHONWARNINGS"] = "ignore::DeprecationWarning"
 import matplotlib.pyplot as plt
 import numpy as np
 import time
 from pathlib import Path
-import os
 from IPython.display import clear_output
 from matplotlib.ticker import MaxNLocator
 import json
