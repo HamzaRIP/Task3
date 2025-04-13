@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import time
 from pathlib import Path
-from IPython.display import clear_output
 from matplotlib.ticker import MaxNLocator
 import json
 
@@ -133,6 +132,8 @@ class TrainingMonitor:
             # Display the plot if in interactive environment
             if self.live_plot:
                 try:
+                    # only import if using live plot (Ipython not compatable on department computers)
+                    from IPython.display import clear_output
                     clear_output(wait=True)
                     plt.draw()
                     plt.pause(0.001)
