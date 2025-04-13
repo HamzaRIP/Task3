@@ -1,3 +1,5 @@
+import os
+os.environ["PYTHONWARNINGS"] = "ignore::DeprecationWarning"
 import gymnasium
 from gymnasium import spaces
 import supersuit as ss

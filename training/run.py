@@ -1,16 +1,22 @@
 """
 Run training for the Knights vs Archers game with real-time visualization.
 """
+
 import sys
 import os
+
+# Rest of your imports and code...
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
 from pathlib import Path
-from agent_implementation import train_archer_agent, ArcherWrapper, evaluate_agent, ArcherPredictFunction, compare_with_baselines
+from agent_implementation import CustomPredictFunction, CustomWrapper, train_archer_agent, evaluate_agent, compare_with_baselines
 from utils import create_environment
 import matplotlib.pyplot as plt
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Import the NN parameters 
 # (assuming they're defined in agent_implementation.py - adjust import as needed)
@@ -20,16 +26,6 @@ try:
         CLIP_PARAM, VF_CLIP_PARAM, ENTROPY_COEFF, NUM_SGD_ITER
     )
 except ImportError:
-    # Default values if import fails
-    # BATCH_SIZE = 1024
-    # LEARNING_RATE = 3e-4
-    # GAMMA = 0.99
-    # LAMBDA = 0.95
-    # KL_COEFF = 0.2
-    # CLIP_PARAM = 0.2
-    # VF_CLIP_PARAM = 10.0
-    # ENTROPY_COEFF = 0.01
-    # NUM_SGD_ITER = 10
     raise ImportError("Neural network parameters not found")
 
 def save_nn_params(save_dir):
@@ -103,12 +99,20 @@ def parse_args():
                         help='Number of episodes for evaluation')
     parser.add_argument('--no-live-plot', action='store_true',
                         help='Disable live plotting (useful for headless servers)')
-    
+    parser.add_argument('--screen', '-s', action='store_true',
+                        help='Set render mode to human (show game)')
     return parser.parse_args()
 
 def main():
     # Parse command line arguments
     args = parse_args()
+
+    visual_observation = False
+    render_mode = "human" if args.screen else None # "human" or None
+    logger.info(f'Show game: {render_mode}')
+    if render_mode == "human":
+        logger.info(f'Press q to end game')
+    logger.info(f'Use pixels: {visual_observation}')
     
     # Get next session ID and create session directory
     _, session_dir = get_next_session_id(args.plot_dir)
@@ -127,13 +131,14 @@ def main():
     print("Creating environment...")
     env = create_environment(
         num_agents=args.num_agents,
-        visual_observation=False,
+        visual_observation=visual_observation,
         max_zombies=args.max_zombies,
-        max_cycles=1000
+        max_cycles=1000,
+        render_mode=render_mode
     )
     
     # Apply custom wrapper
-    env = ArcherWrapper(env)
+    env = CustomWrapper(env)
     
     # Train the agent
     print(f"Training agent for up to {args.max_iterations} iterations...")
@@ -149,7 +154,7 @@ def main():
     
     # Evaluate the trained agent
     print("\nEvaluating trained agent...")
-    trained_agent = ArcherPredictFunction(env)
+    trained_agent = CustomPredictFunction(env)
     mean_reward = evaluate_agent(env, num_episodes=args.eval_episodes)
     
     # Compare with baselines
