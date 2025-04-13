@@ -58,3 +58,33 @@ The implementation follows the template provided in the repository and adapts it
 4. **Evaluation**: The trained agent is evaluated against simple baseline strategies to assess its performance.
 
 The implementation meets the requirements specified in the assignment instructions, including training an agent for a single-archer KAZ environment and comparing it against simple baselines.
+
+---
+
+## SSH Documentation
+
+### Assuming .ssh/config is:
+```
+Host KUL
+    User <r-studentno>
+    HostName st.cs.kuleuven.be
+    PasswordAuthentication no
+    IdentitiesOnly yes
+    IdentityFile ~/.ssh/KUL/id_rsa (or key directory)
+
+Host *.student.cs.kuleuven.be
+    User <r-studentno>
+    PasswordAuthentication no
+    IdentitiesOnly yes
+    IdentityFile ~/.ssh/KUL/id_rsa (or key directory)
+    ProxyJump KUL
+```
+Generate key at https://www.cs.kuleuven.be/restricted/ssh/
+See `ssh.md` in original repo for more info: https://github.com/ML-KULeuven/ml-project-2024-2025/blob/main/ssh.md
+
+### Accessing webpage of available servers
+`ssh -L 10480:mysql.student.cs.kuleuven.be:443 KUL`
+open `https://localhost:10480`
+
+### Accessing server:
+`ssh <pcname>.student.cs.kuleuven.be`
