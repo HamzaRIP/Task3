@@ -88,3 +88,8 @@ open `https://localhost:10480`
 
 ### Accessing server:
 `ssh <pcname>.student.cs.kuleuven.be`
+
+### Once accessed:
+`cd /cw/lvs/NoCsBack/vakken/H0T25A/ml-project`
+`source /cw/lvs/NoCsBack/vakken/H0T25A/ml-project/venv/bin/activate`
+
