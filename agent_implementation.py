@@ -44,29 +44,97 @@ class CustomWrapper(BaseWrapper):
     and adds feature engineering for better agent performance.
     See: https://pettingzoo.farama.org/content/environment_creation/
     """
-    # Define the environment 
-    def observation_space(self, agent: AgentID) -> gymnasium.spaces.Space:
-        return spaces.flatten_space(super().observation_space(agent))
 
-    # Define the observation
+    def __init__(self, env):
+        super().__init__(env)
+        self.prev_obs = {}  # Store previous observations for each agent
+
+    def reset(self, **kwargs):
+        self.prev_obs = {}  # Reset stored observations
+        return super().reset(**kwargs)
+
+    # Define the environment  (not sure about this??)
+    def observation_space(self, agent: AgentID):
+        num_entities = 22  # Set this to the correct number of rows in your obs array
+        num_features = 7   # 5 original + 2 velocity
+        return spaces.Box(low=-np.inf, high=np.inf, shape=(num_entities * num_features,), dtype=np.float32)
+
+    def return_nearest_zombie(self, obs):
+        """Returns the distance and the index to the closest zombie, else 1 and -1"""
+        num_zombies = 10
+        min_distance = float('inf')
+        min_index = -1
+        for i in range(12, 12 + num_zombies):
+            relative_distance = obs[i, 0] if obs[i, 0] > 0 else 1
+            if relative_distance < min_distance:
+                min_distance = relative_distance
+                min_index = i
+        return min_distance, min_index
+
+    def calculate_velocity_vectors(self, agent: AgentID, obs: np.ndarray) -> np.ndarray:
+        # Create enhanced observation array with two extra columns for velocity
+        enhanced_obs = np.zeros((obs.shape[0], 7), dtype=obs.dtype)
+        
+        # Copy the original 5 features
+        enhanced_obs[:, :5] = obs
+        
+        # Calculate velocities if we have previous observation
+        if agent in self.prev_obs:
+            prev_obs = self.prev_obs[agent]
+            
+            # Calculate velocity as position difference
+            # Use min to handle different sizes of observations
+            min_rows = min(obs.shape[0], prev_obs.shape[0])
+            
+            # x velocity = current x position - previous x position
+            enhanced_obs[:min_rows, 5] = np.clip((obs[:min_rows, 1] - prev_obs[:min_rows, 1]) * 30, -1, 1)
+            
+            # y velocity = current y position - previous y position
+            enhanced_obs[:min_rows, 6] = np.clip((obs[:min_rows, 2] - prev_obs[:min_rows, 2]) * 40, -1, 1)
+        
+        x_velocity = enhanced_obs[12, 5]
+        y_velocity = enhanced_obs[12, 6]
+
+        print(f"velocities: {x_velocity:4f}, {y_velocity:4f}")
+
+        # Store current observation for next step
+        self.prev_obs[agent] = obs.copy()
+        
+        return enhanced_obs
+        
+
     def observe(self, agent: AgentID) -> ObsType | None:
         obs = super().observe(agent)
         if obs is None:
             return None
 
+        # Calculate enhanced observation with velocity vectors
+        enhanced_obs = self.calculate_velocity_vectors(agent, obs)
+
+        # print(enhanced_obs)
+
         # Agent Position (assuming one)
-        agent_x, agent_y = obs[0, 1], obs[0, 2]
+        agent_x, agent_y = enhanced_obs[0, 1], enhanced_obs[0, 2]
 
         # Agent heading (assuming one)
-        agent_dx, agent_dy = obs[0, 3], obs[0, 4]
+        agent_dx, agent_dy = enhanced_obs[0, 3], enhanced_obs[0, 4]
         
-        # Zombie Archer Relative Position 
-        # Note: Up and left are negative, down and right are positive
-        zombie_archer_x, zombie_archer_y = obs[12, 1], obs[12, 2] 
+        # Agent velocity
+        agent_vx, agent_vy = enhanced_obs[0, 5], enhanced_obs[0, 6]
 
-        print(f"Zombie Archer Relative Position: ({zombie_archer_x}, {zombie_archer_y})")
+        # Position of zombie relative to archer
+        zombie_archer_x, zombie_archer_y = enhanced_obs[12, 1], enhanced_obs[12, 2] 
+        
+        # Zombie velocity 
+        zombie_vx, zombie_vy = enhanced_obs[12, 5], enhanced_obs[12, 6]
 
-        flat_obs = obs.flatten()
+        # returns closest distance to zombie and zombie index
+        min_distance, min_index = self.return_nearest_zombie(obs)
+
+        # print(f"min distance: {min_distance}, min index: {min_index}")
+
+        # Flatten and return the enhanced observation
+        flat_obs = enhanced_obs.flatten()
         return flat_obs
 
 class CustomPredictFunction(Callable):
@@ -114,10 +182,10 @@ def algo_config(id_env, env, policies, policies_to_train):
                         module_class=DefaultPPOTorchRLModule,
                         observation_space=env.observation_space(x), 
                         action_space=env.action_space(x),
-                        # Changed model_config_dict to model_config
                         model_config={
                             "fcnet_hiddens": [128, 128],
                             "fcnet_activation": "relu",
+                            "input_dim": env.observation_space(x).shape[0]
                         }
                     )
                     for x in policies
@@ -141,7 +209,7 @@ def algo_config(id_env, env, policies, policies_to_train):
 
 # And when creating the algorithm:
 
-def train_archer_agent(env, checkpoint_path, max_iterations=1000, plot_dir="./training_plots"):
+def train_archer_agent(env, checkpoint_path, max_iterations=1000, plot_dir="./training_plots", monitor=None):
     """
     Train the archer agent using PPO.
     
@@ -150,12 +218,15 @@ def train_archer_agent(env, checkpoint_path, max_iterations=1000, plot_dir="./tr
         checkpoint_path: Path to save checkpoints
         max_iterations: Maximum number of training iterations
         plot_dir: Directory to save training plots
+        monitor: Optional TrainingMonitor instance (for live comparison)
         
     Returns:
         Trained algorithm
     """
     # Set up training monitor
-    monitor = setup_training_monitor(save_dir=plot_dir, log_interval=1, live_plot=True)
+    if monitor is None:
+        from training.training_monitor import setup_training_monitor
+        monitor = setup_training_monitor(save_dir=plot_dir, log_interval=1, live_plot=True)
     
     # Convert AEC environment to parallel for RLlib
     rllib_env = ParallelPettingZooEnv(pettingzoo.utils.conversions.aec_to_parallel(env))

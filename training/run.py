@@ -101,6 +101,8 @@ def parse_args():
                         help='Disable live plotting (useful for headless servers)')
     parser.add_argument('--screen', '-s', action='store_true',
                         help='Set render mode to human (show game)')
+    parser.add_argument('--compare', nargs='?', const='Comparison_run', default=None, type=str,
+                        help='If set, overlay training history from given training ID (default: Comparison_run)')
     return parser.parse_args()
 
 def main():
@@ -139,7 +141,23 @@ def main():
     
     # Apply custom wrapper
     env = CustomWrapper(env)
-    
+
+    # Prepare comparison data if requested
+    comparison_history = None
+    comparison_id = args.compare
+    if comparison_id:
+        comp_hist_path = os.path.join(args.plot_dir, comparison_id, "training_history.json")
+        if os.path.exists(comp_hist_path):
+            with open(comp_hist_path, "r") as f:
+                comparison_history = json.load(f)
+            print(f"Loaded comparison training history from {comp_hist_path}")
+        else:
+            print(f"Warning: Comparison training history not found at {comp_hist_path}")
+
+    # Pass comparison_history to the training monitor
+    from training.training_monitor import setup_training_monitor
+    monitor = setup_training_monitor(save_dir=plot_dir, live_plot=not args.no_live_plot, comparison_history=comparison_history)
+
     # Train the agent
     print(f"Training agent for up to {args.max_iterations} iterations...")
     print(f"Checkpoints will be saved to: {checkpoint_path}")
@@ -149,7 +167,8 @@ def main():
         env, 
         checkpoint_path, 
         max_iterations=args.max_iterations, 
-        plot_dir=plot_dir
+        plot_dir=plot_dir,
+        monitor=monitor
     )
     
     # Evaluate the trained agent
