@@ -10,7 +10,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
 from pathlib import Path
-from agent_implementation import CustomPredictFunction, CustomWrapper, train_archer_agent, evaluate_agent, compare_with_baselines
+from submission_single import CustomPredictFunction, CustomWrapper, train_archer_agent, evaluate_agent, compare_with_baselines
 from utils import create_environment
 import matplotlib.pyplot as plt
 import json
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # Import the NN parameters 
 # (assuming they're defined in agent_implementation.py - adjust import as needed)
 try:
-    from agent_implementation import (
+    from submission_single import (
         BATCH_SIZE, LEARNING_RATE, GAMMA, LAMBDA, KL_COEFF, 
         CLIP_PARAM, VF_CLIP_PARAM, ENTROPY_COEFF, NUM_SGD_ITER, 
         HIDDEN_LAYERS
