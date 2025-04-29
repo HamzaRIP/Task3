@@ -23,7 +23,8 @@ logger = logging.getLogger(__name__)
 try:
     from agent_implementation import (
         BATCH_SIZE, LEARNING_RATE, GAMMA, LAMBDA, KL_COEFF, 
-        CLIP_PARAM, VF_CLIP_PARAM, ENTROPY_COEFF, NUM_SGD_ITER
+        CLIP_PARAM, VF_CLIP_PARAM, ENTROPY_COEFF, NUM_SGD_ITER, 
+        HIDDEN_LAYERS
     )
 except ImportError:
     raise ImportError("Neural network parameters not found")
@@ -44,7 +45,8 @@ def save_nn_params(save_dir):
         "CLIP_PARAM": CLIP_PARAM,
         "VF_CLIP_PARAM": VF_CLIP_PARAM,
         "ENTROPY_COEFF": ENTROPY_COEFF,
-        "NUM_SGD_ITER": NUM_SGD_ITER
+        "NUM_SGD_ITER": NUM_SGD_ITER,
+        "HIDDEN_LAYERS": HIDDEN_LAYERS
     }
     
     # Save as JSON

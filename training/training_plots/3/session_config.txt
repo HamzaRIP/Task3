@@ -2,10 +2,10 @@ Max iterations: 500
 Number of agents: 1
 Max zombies: 10
 Evaluation episodes: 10
-Final mean reward: 6.3
+Final mean reward: 5.5
 
 Baseline comparison:
-trained_agent: 4.1
-random: 1.7
+trained_agent: 9.9
+random: 2.3
 always_shoot: 0.0
 always_move_right: 0.0

@@ -28,15 +28,17 @@ from utils import create_environment
 # Import our training monitor
 from training.training_monitor import setup_training_monitor
 
-BATCH_SIZE = 1024      # No. steps collected for training in each batch, larger batches provide more stable gradients.
-LEARNING_RATE = 1e-3   # Gradient update step size, controls how quickly the neural network weights are adjusted.
+BATCH_SIZE = 1024        # No. steps collected for training in each batch, larger batches provide more stable gradients.
+LEARNING_RATE = 1e-4   # Gradient update step size, controls how quickly the neural network weights are adjusted.
 GAMMA = 0.99           # Discount factor for future rewards, values closer to 1 place more importance on long-term rewards.
 LAMBDA = 0.95          # GAE (Generalized Advantage Estimation) parameter, controls bias-variance tradeoff in advantage estimation.
 KL_COEFF = 0.2         # Coeff for KL divergence penalty, prevents policy updates from changing too drastically from previous policy.
 CLIP_PARAM = 0.2       # PPO clipping parameter, limits policy ratio to prevent too large policy updates.
-VF_CLIP_PARAM = 10.0   # Value function clipping parameter, limits how much the value function estimates can change per update.
+VF_CLIP_PARAM = 10.0    # Value function clipping parameter, limits how much the value function estimates can change per update.
 ENTROPY_COEFF = 0.01   # Coeff for entropy bonus, encourages exploration by rewarding policies with higher action entropy.
 NUM_SGD_ITER = 10      # No. SGD passes over the training data, determines how many times each batch is reused for optimization.
+
+HIDDEN_LAYERS = [256, 256, 128]
 
 class CustomWrapper(BaseWrapper):
     """
@@ -183,7 +185,7 @@ def algo_config(id_env, env, policies, policies_to_train):
                         observation_space=env.observation_space(x), 
                         action_space=env.action_space(x),
                         model_config={
-                            "fcnet_hiddens": [128, 128],
+                            "fcnet_hiddens": HIDDEN_LAYERS,
                             "fcnet_activation": "relu",
                             "input_dim": env.observation_space(x).shape[0]
                         }
