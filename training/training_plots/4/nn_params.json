@@ -1,6 +1,6 @@
 {
     "BATCH_SIZE": 1024,
-    "LEARNING_RATE": 0.001,
+    "LEARNING_RATE": 0.0001,
     "GAMMA": 0.99,
     "LAMBDA": 0.95,
     "KL_COEFF": 0.2,
