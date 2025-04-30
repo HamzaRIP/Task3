@@ -8,6 +8,29 @@ import numpy as np
 import torch
 from typing import Callable
 import matplotlib.pyplot as plt
+import sys
+
+# Get the absolute path to the module directory
+package_directory = os.path.dirname(os.path.abspath(__file__))
+
+from pettingzoo.utils import BaseWrapper
+from pettingzoo.utils.env import AgentID, ObsType
+from ray.rllib.algorithms.ppo import PPOConfig
+from ray.rllib.algorithms.ppo.torch.default_ppo_torch_rl_module import DefaultPPOTorchRLModule
+from ray.rllib.core.rl_module import RLModule, MultiRLModule
+from ray.rllib.core.rl_module import MultiRLModuleSpec, RLModuleSpec
+from ray.rllib.env.wrappers.pettingzoo_env import PettingZooEnv, ParallelPettingZooEnv
+from ray.tune.registry import register_env
+import pettingzoo
+import supersuit as ss
+
+
+# Import from local utils.py file using absolute path
+sys.path.append(package_directory)
+from utils import create_environment
+# Import our training monitor using absolute path
+sys.path.append(os.path.join(package_directory, "training"))
+from training_monitor import setup_training_monitor
 
 
 
@@ -28,14 +51,26 @@ from utils import create_environment
 # Import our training monitor
 from training.training_monitor import setup_training_monitor
 
-BATCH_SIZE = 1024        # No. steps collected for training in each batch, larger batches provide more stable gradients.
-LEARNING_RATE = 1e-4   # Gradient update step size, controls how quickly the neural network weights are adjusted.
+# batch_size: 2048
+# learning_rate: 0.0003
+# gamma: 0.99
+# lambda_: 0.9
+# kl_coeff: 0.2
+# clip_param: 0.1
+# vf_clip_param: 10.0
+# entropy_coeff: 0.005
+# num_sgd_iter: 10
+# hidden_layers: [256, 256, 128]
+
+
+BATCH_SIZE = 2048        # No. steps collected for training in each batch, larger batches provide more stable gradients.
+LEARNING_RATE = 0.0003   # Gradient update step size, controls how quickly the neural network weights are adjusted.
 GAMMA = 0.99           # Discount factor for future rewards, values closer to 1 place more importance on long-term rewards.
-LAMBDA = 0.95          # GAE (Generalized Advantage Estimation) parameter, controls bias-variance tradeoff in advantage estimation.
+LAMBDA = 0.9          # GAE (Generalized Advantage Estimation) parameter, controls bias-variance tradeoff in advantage estimation.
 KL_COEFF = 0.2         # Coeff for KL divergence penalty, prevents policy updates from changing too drastically from previous policy.
-CLIP_PARAM = 0.2       # PPO clipping parameter, limits policy ratio to prevent too large policy updates.
+CLIP_PARAM = 0.1       # PPO clipping parameter, limits policy ratio to prevent too large policy updates.
 VF_CLIP_PARAM = 10.0    # Value function clipping parameter, limits how much the value function estimates can change per update.
-ENTROPY_COEFF = 0.01   # Coeff for entropy bonus, encourages exploration by rewarding policies with higher action entropy.
+ENTROPY_COEFF = 0.005   # Coeff for entropy bonus, encourages exploration by rewarding policies with higher action entropy.
 NUM_SGD_ITER = 10      # No. SGD passes over the training data, determines how many times each batch is reused for optimization.
 
 HIDDEN_LAYERS = [256, 256, 128]
@@ -145,8 +180,10 @@ class CustomPredictFunction(Callable):
     Loads a trained RLLib algorithm from a checkpoint and extracts the policies.
     """
     def __init__(self, env):
-        # Load the trained model from checkpoint
-        checkpoint_path = (Path("results") / "learner_group" / "learner" / "rl_module").resolve()
+        # Get the absolute path to the module directory
+        package_directory = os.path.dirname(os.path.abspath(__file__))
+        # Load the trained model from checkpoint using absolute path
+        checkpoint_path = os.path.join(package_directory, "results", "learner_group", "learner", "rl_module")
         self.modules = MultiRLModule.from_checkpoint(checkpoint_path)
     
     def __call__(self, observation, agent, *args, **kwargs):
@@ -227,7 +264,10 @@ def train_archer_agent(env, checkpoint_path, max_iterations=1000, plot_dir="./tr
     """
     # Set up training monitor
     if monitor is None:
-        from training.training_monitor import setup_training_monitor
+        # Get the absolute path to the module directory
+        package_directory = os.path.dirname(os.path.abspath(__file__))
+        sys.path.append(os.path.join(package_directory, "training"))
+        from training_monitor import setup_training_monitor
         monitor = setup_training_monitor(save_dir=plot_dir, log_interval=1, live_plot=True)
     
     # Convert AEC environment to parallel for RLlib

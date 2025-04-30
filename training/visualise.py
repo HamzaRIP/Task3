@@ -15,7 +15,10 @@ import logging
 import importlib.util
 import pygame
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Get the absolute path to the module directory and parent directory
+package_directory = os.path.dirname(os.path.abspath(__file__))
+parent_directory = os.path.dirname(package_directory)
+sys.path.append(parent_directory)
 from utils import create_environment
 
 
@@ -117,4 +120,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
      sys.exit(main())
-

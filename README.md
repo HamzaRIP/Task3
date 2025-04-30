@@ -87,7 +87,7 @@ See `ssh.md` in original repo for more info: https://github.com/ML-KULeuven/ml-p
 open `https://localhost:10480`
 
 ### Accessing server:
-`ssh <pcname>.student.cs.kuleuven.be`
+`cd <pcname>.student.cs.kuleuven.be`
 
 ### Once accessed:
 `cd /cw/lvs/NoCsBack/vakken/H0T25A/ml-project`
