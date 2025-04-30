@@ -132,7 +132,7 @@ class CustomWrapper(BaseWrapper):
         x_velocity = enhanced_obs[12, 5]
         y_velocity = enhanced_obs[12, 6]
 
-        print(f"velocities: {x_velocity:4f}, {y_velocity:4f}")
+        # print(f"velocities: {x_velocity:4f}, {y_velocity:4f}")
 
         # Store current observation for next step
         self.prev_obs[agent] = obs.copy()
