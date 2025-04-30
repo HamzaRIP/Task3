@@ -93,24 +93,35 @@ class CustomWrapper(BaseWrapper):
     # Define the environment  (not sure about this??)
     def observation_space(self, agent: AgentID):
         num_entities = 22  # Set this to the correct number of rows in your obs array
-        num_features = 7   # 5 original + 2 velocity
+        num_features = 10  # 5 original + 2 velocity + 3 new features
         return spaces.Box(low=-np.inf, high=np.inf, shape=(num_entities * num_features,), dtype=np.float32)
 
     def return_nearest_zombie(self, obs):
         """Returns the distance and the index to the closest zombie, else 1 and -1"""
-        num_zombies = 10
         min_distance = float('inf')
         min_index = -1
-        for i in range(12, 12 + num_zombies):
-            relative_distance = obs[i, 0] if obs[i, 0] > 0 else 1
-            if relative_distance < min_distance:
-                min_distance = relative_distance
-                min_index = i
+        
+        # Get the actual size of the observation array
+        num_entities = obs.shape[0]
+        
+        # Start from index 12 (first zombie) and go up to the end of the array
+        # but don't exceed the actual array size
+        start_idx = 12
+        num_zombies = min(10, max(0, num_entities - start_idx))
+        
+        for i in range(start_idx, start_idx + num_zombies):
+            if i < num_entities:  # Extra safety check
+                relative_distance = obs[i, 0] if obs[i, 0] > 0 else 1
+                if relative_distance < min_distance:
+                    min_distance = relative_distance
+                    min_index = i
+        
         return min_distance, min_index
 
     def calculate_velocity_vectors(self, agent: AgentID, obs: np.ndarray) -> np.ndarray:
-        # Create enhanced observation array with two extra columns for velocity
-        enhanced_obs = np.zeros((obs.shape[0], 7), dtype=obs.dtype)
+        # Create enhanced observation array with more features
+        # Original 5 + 2 velocity + 3 new features (relative angle, time since last shot, normalized distance)
+        enhanced_obs = np.zeros((obs.shape[0], 10), dtype=obs.dtype)
         
         # Copy the original 5 features
         enhanced_obs[:, :5] = obs
@@ -129,13 +140,43 @@ class CustomWrapper(BaseWrapper):
             # y velocity = current y position - previous y position
             enhanced_obs[:min_rows, 6] = np.clip((obs[:min_rows, 2] - prev_obs[:min_rows, 2]) * 40, -1, 1)
         
-        x_velocity = enhanced_obs[12, 5]
-        y_velocity = enhanced_obs[12, 6]
-
-        # print(f"velocities: {x_velocity:4f}, {y_velocity:4f}")
-
+        # Calculate relative angle between agent and zombies
+        # Assuming agent is at index 0 and zombies start at index 12
+        agent_x, agent_y = obs[0, 1], obs[0, 2]
+        
+        # For each potential zombie (starting at index 12)
+        for i in range(12, obs.shape[0]):
+            if i < obs.shape[0]:  # Safety check
+                zombie_x, zombie_y = obs[i, 1], obs[i, 2]
+                
+                # Calculate angle between agent and zombie
+                angle = np.arctan2(zombie_y - agent_y, zombie_x - agent_x)
+                
+                # Normalize angle to [-1, 1]
+                enhanced_obs[i, 7] = angle / np.pi
+                
+                # Normalized distance (closer to 1 means closer to zombie)
+                distance = np.sqrt((zombie_x - agent_x)**2 + (zombie_y - agent_y)**2)
+                enhanced_obs[i, 8] = 1.0 / (1.0 + distance)
+        
         # Store current observation for next step
         self.prev_obs[agent] = obs.copy()
+        
+        # Initialize time since last shot feature if not already present
+        if not hasattr(self, 'time_since_shot'):
+            self.time_since_shot = {}
+        
+        # Increment time since last shot
+        if agent not in self.time_since_shot:
+            self.time_since_shot[agent] = 0
+        else:
+            self.time_since_shot[agent] += 1
+        
+        # Normalize time since last shot (assuming max cooldown of 30 frames)
+        normalized_time = min(1.0, self.time_since_shot[agent] / 30.0)
+        
+        # Apply this value to all entities in the observation
+        enhanced_obs[:, 9] = normalized_time
         
         return enhanced_obs
         
@@ -145,10 +186,8 @@ class CustomWrapper(BaseWrapper):
         if obs is None:
             return None
 
-        # Calculate enhanced observation with velocity vectors
+        # Calculate enhanced observation with velocity vectors and additional features
         enhanced_obs = self.calculate_velocity_vectors(agent, obs)
-
-        # print(enhanced_obs)
 
         # Agent Position (assuming one)
         agent_x, agent_y = enhanced_obs[0, 1], enhanced_obs[0, 2]
@@ -167,8 +206,6 @@ class CustomWrapper(BaseWrapper):
 
         # returns closest distance to zombie and zombie index
         min_distance, min_index = self.return_nearest_zombie(obs)
-
-        # print(f"min distance: {min_distance}, min index: {min_index}")
 
         # Flatten and return the enhanced observation
         flat_obs = enhanced_obs.flatten()

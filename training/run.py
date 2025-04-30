@@ -5,15 +5,13 @@ Run training for the Knights vs Archers game with real-time visualization.
 import sys
 import os
 
-# Get the absolute path to the module directory and parent directory
-package_directory = os.path.dirname(os.path.abspath(__file__))
-parent_directory = os.path.dirname(package_directory)
-sys.path.append(parent_directory)
+# Rest of your imports and code...
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
 from pathlib import Path
-from training.submission_single import CustomPredictFunction, CustomWrapper, train_archer_agent, evaluate_agent, compare_with_baselines
-from training.utils import create_environment
+from submission_single import CustomPredictFunction, CustomWrapper, train_archer_agent, evaluate_agent, compare_with_baselines
+from utils import create_environment
 import matplotlib.pyplot as plt
 import json
 import logging
@@ -23,7 +21,72 @@ from ray.tune.search import BasicVariantGenerator
 
 logger = logging.getLogger(__name__)
 
-# ... (rest of the code remains the same)
+# Import the NN parameters 
+# (assuming they're defined in agent_implementation.py - adjust import as needed)
+try:
+    from submission_single import (
+        BATCH_SIZE, LEARNING_RATE, GAMMA, LAMBDA, KL_COEFF, 
+        CLIP_PARAM, VF_CLIP_PARAM, ENTROPY_COEFF, NUM_SGD_ITER, 
+        HIDDEN_LAYERS
+    )
+except ImportError:
+    raise ImportError("Neural network parameters not found")
+
+def save_nn_params(save_dir):
+    """
+    Save neural network parameters as JSON
+    
+    Args:
+        save_dir: Directory to save the parameters
+    """
+    params = {
+        "BATCH_SIZE": BATCH_SIZE,
+        "LEARNING_RATE": LEARNING_RATE,
+        "GAMMA": GAMMA, 
+        "LAMBDA": LAMBDA,
+        "KL_COEFF": KL_COEFF,
+        "CLIP_PARAM": CLIP_PARAM,
+        "VF_CLIP_PARAM": VF_CLIP_PARAM,
+        "ENTROPY_COEFF": ENTROPY_COEFF,
+        "NUM_SGD_ITER": NUM_SGD_ITER,
+        "HIDDEN_LAYERS": HIDDEN_LAYERS
+    }
+    
+    # Save as JSON
+    with open(os.path.join(save_dir, "nn_params.json"), "w") as f:
+        json.dump(params, f, indent=4)
+    
+    print(f"Neural network parameters saved to {save_dir}/nn_params.json")
+
+def get_next_session_id(base_dir="training/training_plots"):
+    """
+    Find the next available session ID by checking existing directories.
+    
+    Args:
+        base_dir: Base directory for training data
+        
+    Returns:
+        Next available session ID and the full path to the session directory
+    """
+    # Ensure base directory exists
+    Path(base_dir).mkdir(exist_ok=True, parents=True)
+    
+    # Get all existing session directories (named with integers)
+    existing_sessions = [d for d in os.listdir(base_dir) 
+                         if os.path.isdir(os.path.join(base_dir, d)) and d.isdigit()]
+    
+    # Find next session ID
+    if not existing_sessions:
+        next_id = 1
+    else:
+        next_id = max(map(int, existing_sessions)) + 1
+    
+    # Create new session directory
+    session_dir = os.path.join(base_dir, str(next_id))
+    Path(session_dir).mkdir(exist_ok=True)
+    
+    print(f"Created new training session: {session_dir}")
+    return next_id, session_dir
 
 def train_with_tune(args):
     """
@@ -66,7 +129,7 @@ def train_with_tune(args):
     # Define the training function for Tune
     def train_function(config):
         # Override the global parameters with the ones from Tune
-        from training.submission_single import (
+        from submission_single import (
             BATCH_SIZE, LEARNING_RATE, GAMMA, LAMBDA, KL_COEFF, 
             CLIP_PARAM, VF_CLIP_PARAM, ENTROPY_COEFF, NUM_SGD_ITER, 
             HIDDEN_LAYERS
@@ -109,7 +172,52 @@ def train_with_tune(args):
         # Report the results to Tune
         tune.report(mean_reward=mean_reward)
     
-    # ... (rest of the code remains the same)
+    # Use BasicVariantGenerator which supports all parameter types
+    search_alg = BasicVariantGenerator()
+    
+    # Set up the scheduler
+    scheduler = ASHAScheduler(
+        metric="mean_reward",
+        mode="max",
+        max_t=args.max_iterations // 5,
+        grace_period=args.max_iterations // 10,
+        reduction_factor=2
+    )
+    
+    # Run the hyperparameter search
+    print(f"Starting hyperparameter tuning with {args.tune_samples} samples...")
+    tuner = tune.Tuner(
+        train_function,
+        param_space=search_space,
+        tune_config=tune.TuneConfig(
+            num_samples=args.tune_samples,
+            scheduler=scheduler,
+            search_alg=search_alg
+        )
+    )
+    
+    results = tuner.fit()
+    
+    # Get the best hyperparameters
+    best_result = results.get_best_result(metric="mean_reward", mode="max")
+    best_config = best_result.config
+    best_reward = best_result.metrics["mean_reward"]
+    
+    print(f"\nBest hyperparameters found:")
+    for param, value in best_config.items():
+        print(f"{param}: {value}")
+    print(f"Best mean reward: {best_reward}")
+    
+    # Save the best hyperparameters to a file
+    best_params_dir = os.path.join(args.plot_dir, "best_params")
+    Path(best_params_dir).mkdir(exist_ok=True)
+    
+    with open(os.path.join(best_params_dir, "best_params.json"), "w") as f:
+        json.dump(best_config, f, indent=4)
+    
+    print(f"Best hyperparameters saved to {best_params_dir}/best_params.json")
+    
+    return best_config
 
 def train_with_grid_search(args):
     """
@@ -173,7 +281,134 @@ def train_with_grid_search(args):
         ]
     }
     
-    # ... (rest of the code remains the same)
+    # Create all combinations of parameters
+    import itertools
+    keys = grid_search_space.keys()
+    values = grid_search_space.values()
+    
+    # Calculate total combinations
+    total_combinations = 1
+    for v in values:
+        total_combinations *= len(v)
+    
+    # Limit the number of combinations if too many
+    if total_combinations > args.max_grid_combinations:
+        print(f"Warning: Grid search would generate {total_combinations} combinations.")
+        print(f"Limiting to {args.max_grid_combinations} random combinations.")
+        
+        # Generate a subset of random combinations
+        import random
+        all_combinations = list(itertools.product(*values))
+        random.seed(42)  # For reproducibility
+        selected_combinations = random.sample(all_combinations, args.max_grid_combinations)
+    else:
+        selected_combinations = list(itertools.product(*values))
+        print(f"Grid search will test {total_combinations} parameter combinations.")
+    
+    # Track the best parameters and reward
+    best_params = None
+    best_reward = float('-inf')
+    
+    # Create a directory for grid search results
+    grid_search_dir = os.path.join(args.plot_dir, "grid_search_results")
+    Path(grid_search_dir).mkdir(exist_ok=True, parents=True)
+    
+    # Save the grid search space for reference
+    with open(os.path.join(grid_search_dir, "search_space.json"), "w") as f:
+        json.dump(grid_search_space, f, indent=4)
+    
+    # Run the grid search
+    print(f"Starting grid search with {len(selected_combinations)} parameter combinations...")
+    
+    results = []
+    for i, combination in enumerate(selected_combinations):
+        # Create parameter dictionary
+        params = dict(zip(keys, combination))
+        print(f"\nTesting combination {i+1}/{len(selected_combinations)}:")
+        for k, v in params.items():
+            print(f"  {k}: {v}")
+        
+        # Override the global parameters
+        from submission_single import (
+            BATCH_SIZE, LEARNING_RATE, GAMMA, LAMBDA, KL_COEFF, 
+            CLIP_PARAM, VF_CLIP_PARAM, ENTROPY_COEFF, NUM_SGD_ITER, 
+            HIDDEN_LAYERS
+        )
+        
+        # Override global variables with the current combination
+        globals()["BATCH_SIZE"] = params["batch_size"]
+        globals()["LEARNING_RATE"] = params["learning_rate"]
+        globals()["GAMMA"] = params["gamma"]
+        globals()["LAMBDA"] = params["lambda_"]
+        globals()["KL_COEFF"] = params["kl_coeff"]
+        globals()["CLIP_PARAM"] = params["clip_param"]
+        globals()["VF_CLIP_PARAM"] = params["vf_clip_param"]
+        globals()["ENTROPY_COEFF"] = params["entropy_coeff"]
+        globals()["NUM_SGD_ITER"] = params["num_sgd_iter"]
+        globals()["HIDDEN_LAYERS"] = params["hidden_layers"]
+        
+        # Create a new session directory for this combination
+        _, session_dir = get_next_session_id(args.plot_dir)
+        
+        # Save the hyperparameters for this trial
+        save_nn_params(session_dir)
+        
+        # Set up training monitor
+        from training.training_monitor import setup_training_monitor
+        monitor = setup_training_monitor(save_dir=session_dir, live_plot=False)
+        
+        try:
+            # Train the agent with the current hyperparameters
+            algo = train_archer_agent(
+                env, 
+                args.checkpoint_dir, 
+                max_iterations=args.max_iterations // 3,  # Reduce iterations for faster grid search
+                plot_dir=session_dir,
+                monitor=monitor
+            )
+            
+            # Evaluate the trained agent
+            mean_reward = evaluate_agent(env, num_episodes=5)
+            
+            # Record the results
+            result = {
+                "params": params,
+                "mean_reward": mean_reward,
+                "session_dir": session_dir
+            }
+            results.append(result)
+            
+            # Update best parameters if this combination is better
+            if mean_reward > best_reward:
+                best_reward = mean_reward
+                best_params = params.copy()
+                print(f"New best reward: {best_reward}")
+            
+            # Save the current results
+            with open(os.path.join(grid_search_dir, "results.json"), "w") as f:
+                json.dump(results, f, indent=4, default=str)
+                
+        except Exception as e:
+            print(f"Error during training with parameters: {params}")
+            print(f"Error: {e}")
+            # Continue with the next combination
+    
+    # Print and save the best parameters
+    print(f"\nGrid search complete. Best parameters found:")
+    for param, value in best_params.items():
+        print(f"{param}: {value}")
+    print(f"Best mean reward: {best_reward}")
+    
+    # Save the best hyperparameters to a file
+    best_params_dir = os.path.join(args.plot_dir, "best_grid_params")
+    Path(best_params_dir).mkdir(exist_ok=True)
+    
+    with open(os.path.join(best_params_dir, "best_params.json"), "w") as f:
+        json.dump(best_params, f, indent=4)
+    
+    print(f"Best grid search parameters saved to {best_params_dir}/best_params.json")
+    
+    return best_params
 
 def train_with_refined_grid_search(args):
     """
@@ -232,7 +467,167 @@ def train_with_refined_grid_search(args):
         ]
     }
     
-    # ... (rest of the code remains the same)
+    # Create all combinations of parameters
+    import itertools
+    keys = refined_grid_search_space.keys()
+    values = refined_grid_search_space.values()
+    
+    # Calculate total combinations
+    total_combinations = 1
+    for v in values:
+        total_combinations *= len(v)
+    
+    # Limit the number of combinations if too many
+    if total_combinations > args.max_grid_combinations:
+        print(f"Warning: Refined grid search would generate {total_combinations} combinations.")
+        print(f"Limiting to {args.max_grid_combinations} random combinations.")
+        
+        # Generate a subset of random combinations
+        import random
+        all_combinations = list(itertools.product(*values))
+        random.seed(42)  # For reproducibility
+        selected_combinations = random.sample(all_combinations, args.max_grid_combinations)
+    else:
+        selected_combinations = list(itertools.product(*values))
+        print(f"Refined grid search will test {total_combinations} parameter combinations.")
+    
+    # Track the best parameters and reward
+    best_params = None
+    best_reward = float('-inf')
+    
+    # Create a directory for grid search results
+    grid_search_dir = os.path.join(args.plot_dir, "refined_grid_search_results")
+    Path(grid_search_dir).mkdir(exist_ok=True, parents=True)
+    
+    # Save the grid search space for reference
+    with open(os.path.join(grid_search_dir, "search_space.json"), "w") as f:
+        json.dump(refined_grid_search_space, f, indent=4)
+    
+    # Run the grid search
+    print(f"Starting refined grid search with {len(selected_combinations)} parameter combinations...")
+    
+    results = []
+    for i, combination in enumerate(selected_combinations):
+        # Create parameter dictionary
+        params = dict(zip(keys, combination))
+        print(f"\nTesting combination {i+1}/{len(selected_combinations)}:")
+        for k, v in params.items():
+            print(f"  {k}: {v}")
+        
+        # Override the global parameters
+        from submission_single import (
+            BATCH_SIZE, LEARNING_RATE, GAMMA, LAMBDA, KL_COEFF, 
+            CLIP_PARAM, VF_CLIP_PARAM, ENTROPY_COEFF, NUM_SGD_ITER, 
+            HIDDEN_LAYERS
+        )
+        
+        # Override global variables with the current combination
+        globals()["BATCH_SIZE"] = params["batch_size"]
+        globals()["LEARNING_RATE"] = params["learning_rate"]
+        globals()["GAMMA"] = params["gamma"]
+        globals()["LAMBDA"] = params["lambda_"]
+        globals()["KL_COEFF"] = params["kl_coeff"]
+        globals()["CLIP_PARAM"] = params["clip_param"]
+        globals()["VF_CLIP_PARAM"] = params["vf_clip_param"]
+        globals()["ENTROPY_COEFF"] = params["entropy_coeff"]
+        globals()["NUM_SGD_ITER"] = params["num_sgd_iter"]
+        globals()["HIDDEN_LAYERS"] = params["hidden_layers"]
+        
+        # Create a new session directory for this combination
+        _, session_dir = get_next_session_id(args.plot_dir)
+        
+        # Save the hyperparameters for this trial
+        save_nn_params(session_dir)
+        
+        # Set up training monitor
+        from training.training_monitor import setup_training_monitor
+        monitor = setup_training_monitor(save_dir=session_dir, live_plot=False)
+        
+        try:
+            # Train the agent with the current hyperparameters
+            # Use more iterations for refined search to get more accurate results
+            algo = train_archer_agent(
+                env, 
+                args.checkpoint_dir,
+                max_iterations=args.max_iterations // 2,  # More iterations for refined search
+                plot_dir=session_dir,
+                monitor=monitor
+            )
+            
+            # Evaluate the trained agent with more episodes for more reliable results
+            mean_reward = evaluate_agent(env, num_episodes=10)
+            
+            # Record the results
+            result = {
+                "params": params,
+                "mean_reward": mean_reward,
+                "session_dir": session_dir
+            }
+            results.append(result)
+            
+            # Update best parameters if this combination is better
+            if mean_reward > best_reward:
+                best_reward = mean_reward
+                best_params = params.copy()
+                print(f"New best reward: {best_reward}")
+            
+            # Save the current results
+            with open(os.path.join(grid_search_dir, "results.json"), "w") as f:
+                json.dump(results, f, indent=4, default=str)
+                
+        except Exception as e:
+            print(f"Error during training with parameters: {params}")
+            print(f"Error: {e}")
+            # Continue with the next combination
+    
+    # Print and save the best parameters
+    print(f"\nRefined grid search complete. Best parameters found:")
+    for param, value in best_params.items():
+        print(f"{param}: {value}")
+    print(f"Best mean reward: {best_reward}")
+    
+    # Save the best hyperparameters to a file
+    best_params_dir = os.path.join(args.plot_dir, "best_refined_params")
+    Path(best_params_dir).mkdir(exist_ok=True)
+    
+    with open(os.path.join(best_params_dir, "best_params.json"), "w") as f:
+        json.dump(best_params, f, indent=4)
+    
+    print(f"Best refined parameters saved to {best_params_dir}/best_params.json")
+    
+    return best_params
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Train and visualize Knights vs Archers agent')
+    parser.add_argument('--max-iterations', type=int, default=500, 
+                        help='Maximum number of training iterations')
+    parser.add_argument('--num-agents', type=int, default=1,
+                        help='Number of archer agents')
+    parser.add_argument('--max-zombies', type=int, default=10,
+                        help='Maximum number of zombies')
+    parser.add_argument('--checkpoint-dir', type=str, default='results',
+                        help='Directory to save checkpoints')
+    parser.add_argument('--plot-dir', type=str, default='training/training_plots',
+                        help='Base directory for training plots')
+    parser.add_argument('--eval-episodes', type=int, default=10,
+                        help='Number of episodes for evaluation')
+    parser.add_argument('--no-live-plot', action='store_true',
+                        help='Disable live plotting (useful for headless servers)')
+    parser.add_argument('--screen', '-s', action='store_true',
+                        help='Set render mode to human (show game)')
+    parser.add_argument('--compare', nargs='?', const='Comparison_run', default=None, type=str,
+                        help='If set, overlay training history from given training ID (default: Comparison_run)')
+    parser.add_argument('--tune', action='store_true',
+                        help='Run hyperparameter tuning with Ray Tune')
+    parser.add_argument('--tune-samples', type=int, default=20,
+                        help='Number of hyperparameter samples to try during tuning')
+    parser.add_argument('--grid-search', action='store_true',
+                        help='Run tactical grid search for hyperparameter optimization')
+    parser.add_argument('--refined-grid-search', action='store_true',
+                        help='Run refined grid search based on previous results')
+    parser.add_argument('--max-grid-combinations', type=int, default=24,
+                        help='Maximum number of grid search combinations to try')
+    return parser.parse_args()
 
 def main():
     # Parse command line arguments
@@ -249,7 +644,7 @@ def main():
     if args.tune:
         best_config = train_with_tune(args)
         # Update the global parameters with the best ones found
-        from training.submission_single import (
+        from submission_single import (
             BATCH_SIZE, LEARNING_RATE, GAMMA, LAMBDA, KL_COEFF, 
             CLIP_PARAM, VF_CLIP_PARAM, ENTROPY_COEFF, NUM_SGD_ITER, 
             HIDDEN_LAYERS
@@ -268,7 +663,7 @@ def main():
     elif args.grid_search:
         best_config = train_with_grid_search(args)
         # Update the global parameters with the best ones found
-        from training.submission_single import (
+        from submission_single import (
             BATCH_SIZE, LEARNING_RATE, GAMMA, LAMBDA, KL_COEFF, 
             CLIP_PARAM, VF_CLIP_PARAM, ENTROPY_COEFF, NUM_SGD_ITER, 
             HIDDEN_LAYERS
@@ -287,7 +682,7 @@ def main():
     elif args.refined_grid_search:
         best_config = train_with_refined_grid_search(args)
         # Update the global parameters with the best ones found
-        from training.submission_single import (
+        from submission_single import (
             BATCH_SIZE, LEARNING_RATE, GAMMA, LAMBDA, KL_COEFF, 
             CLIP_PARAM, VF_CLIP_PARAM, ENTROPY_COEFF, NUM_SGD_ITER, 
             HIDDEN_LAYERS
@@ -347,5 +742,60 @@ def main():
     # Pass comparison_history to the training monitor
     from training.training_monitor import setup_training_monitor
     monitor = setup_training_monitor(save_dir=plot_dir, live_plot=not args.no_live_plot, comparison_history=comparison_history)
+
+    # Train the agent
+    print(f"Training agent for up to {args.max_iterations} iterations...")
+    print(f"Checkpoints will be saved to: {args.checkpoint_dir}")
+    print(f"Training plots will be saved to: {plot_dir}")
     
-    # ... (rest of the code remains the same)
+    algo = train_archer_agent(
+        env, 
+        args.checkpoint_dir, 
+        max_iterations=args.max_iterations, 
+        plot_dir=plot_dir,
+        monitor=monitor
+    )
+    
+    # Evaluate the trained agent
+    print("\nEvaluating trained agent...")
+    trained_agent = CustomPredictFunction(env)
+    mean_reward = evaluate_agent(env, num_episodes=args.eval_episodes)
+    
+    # Compare with baselines
+    print("\nComparing with baselines...")
+    baseline_results = compare_with_baselines(env, trained_agent, num_episodes=args.eval_episodes)
+    
+    # Print comparison results
+    print("\nComparison Results:")
+    for strategy, reward in baseline_results.items():
+        print(f"{strategy}: {reward}")
+    
+    # Generate and display final results plot
+    plt.figure(figsize=(10, 6))
+    strategies = list(baseline_results.keys())
+    rewards = [baseline_results[s] for s in strategies]
+    
+    plt.bar(strategies, rewards)
+    plt.ylabel('Mean Reward')
+    plt.title('Strategy Comparison')
+    plt.savefig(f"{plot_dir}/strategy_comparison.png")
+    
+    # Save session configuration
+    with open(f"{plot_dir}/session_config.txt", "w") as f:
+        f.write(f"Max iterations: {args.max_iterations}\n")
+        f.write(f"Number of agents: {args.num_agents}\n")
+        f.write(f"Max zombies: {args.max_zombies}\n")
+        f.write(f"Evaluation episodes: {args.eval_episodes}\n")
+        f.write(f"Final mean reward: {mean_reward}\n")
+        f.write("\nBaseline comparison:\n")
+        for strategy, reward in baseline_results.items():
+            f.write(f"{strategy}: {reward}\n")
+    
+    # Show the plot if not in headless mode
+    if not args.no_live_plot:
+        plt.show()
+    
+    print(f"Training and evaluation complete. All results saved to {plot_dir}")
+
+if __name__ == "__main__":
+    main()
