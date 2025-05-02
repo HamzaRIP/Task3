@@ -76,139 +76,15 @@ NUM_SGD_ITER = 10      # No. SGD passes over the training data, determines how m
 HIDDEN_LAYERS = [256, 256, 128]
 
 class CustomWrapper(BaseWrapper):
-    """
-    Custom wrapper for the KAZ environment that flattens the observation space
-    and adds feature engineering for better agent performance.
-    See: https://pettingzoo.farama.org/content/environment_creation/
-    """
+    # This is an example of a custom wrapper that flattens the symbolic vector state of the environment
+    # Wrapper are useful to inject state pre-processing or feature that does not need to be learned by the agent
 
-    def __init__(self, env):
-        super().__init__(env)
-        self.prev_obs = {}  # Store previous observations for each agent
-
-    def reset(self, **kwargs):
-        self.prev_obs = {}  # Reset stored observations
-        return super().reset(**kwargs)
-
-    # Define the environment  (not sure about this??)
-    def observation_space(self, agent: AgentID):
-        num_entities = 22  # Set this to the correct number of rows in your obs array
-        num_features = 10  # 5 original + 2 velocity + 3 new features
-        return spaces.Box(low=-np.inf, high=np.inf, shape=(num_entities * num_features,), dtype=np.float32)
-
-    def return_nearest_zombie(self, obs):
-        """Returns the distance and the index to the closest zombie, else 1 and -1"""
-        min_distance = float('inf')
-        min_index = -1
-        
-        # Get the actual size of the observation array
-        num_entities = obs.shape[0]
-        
-        # Start from index 12 (first zombie) and go up to the end of the array
-        # but don't exceed the actual array size
-        start_idx = 12
-        num_zombies = min(10, max(0, num_entities - start_idx))
-        
-        for i in range(start_idx, start_idx + num_zombies):
-            if i < num_entities:  # Extra safety check
-                relative_distance = obs[i, 0] if obs[i, 0] > 0 else 1
-                if relative_distance < min_distance:
-                    min_distance = relative_distance
-                    min_index = i
-        
-        return min_distance, min_index
-
-    def calculate_velocity_vectors(self, agent: AgentID, obs: np.ndarray) -> np.ndarray:
-        # Create enhanced observation array with more features
-        # Original 5 + 2 velocity + 3 new features (relative angle, time since last shot, normalized distance)
-        enhanced_obs = np.zeros((obs.shape[0], 10), dtype=obs.dtype)
-        
-        # Copy the original 5 features
-        enhanced_obs[:, :5] = obs
-        
-        # Calculate velocities if we have previous observation
-        if agent in self.prev_obs:
-            prev_obs = self.prev_obs[agent]
-            
-            # Calculate velocity as position difference
-            # Use min to handle different sizes of observations
-            min_rows = min(obs.shape[0], prev_obs.shape[0])
-            
-            # x velocity = current x position - previous x position
-            enhanced_obs[:min_rows, 5] = np.clip((obs[:min_rows, 1] - prev_obs[:min_rows, 1]) * 30, -1, 1)
-            
-            # y velocity = current y position - previous y position
-            enhanced_obs[:min_rows, 6] = np.clip((obs[:min_rows, 2] - prev_obs[:min_rows, 2]) * 40, -1, 1)
-        
-        # Calculate relative angle between agent and zombies
-        # Assuming agent is at index 0 and zombies start at index 12
-        agent_x, agent_y = obs[0, 1], obs[0, 2]
-        
-        # For each potential zombie (starting at index 12)
-        for i in range(12, obs.shape[0]):
-            if i < obs.shape[0]:  # Safety check
-                zombie_x, zombie_y = obs[i, 1], obs[i, 2]
-                
-                # Calculate angle between agent and zombie
-                angle = np.arctan2(zombie_y - agent_y, zombie_x - agent_x)
-                
-                # Normalize angle to [-1, 1]
-                enhanced_obs[i, 7] = angle / np.pi
-                
-                # Normalized distance (closer to 1 means closer to zombie)
-                distance = np.sqrt((zombie_x - agent_x)**2 + (zombie_y - agent_y)**2)
-                enhanced_obs[i, 8] = 1.0 / (1.0 + distance)
-        
-        # Store current observation for next step
-        self.prev_obs[agent] = obs.copy()
-        
-        # Initialize time since last shot feature if not already present
-        if not hasattr(self, 'time_since_shot'):
-            self.time_since_shot = {}
-        
-        # Increment time since last shot
-        if agent not in self.time_since_shot:
-            self.time_since_shot[agent] = 0
-        else:
-            self.time_since_shot[agent] += 1
-        
-        # Normalize time since last shot (assuming max cooldown of 30 frames)
-        normalized_time = min(1.0, self.time_since_shot[agent] / 30.0)
-        
-        # Apply this value to all entities in the observation
-        enhanced_obs[:, 9] = normalized_time
-        
-        return enhanced_obs
-        
+    def observation_space(self, agent: AgentID) -> gymnasium.spaces.Space:
+        return  spaces.flatten_space(super().observation_space(agent))
 
     def observe(self, agent: AgentID) -> ObsType | None:
         obs = super().observe(agent)
-        if obs is None:
-            return None
-
-        # Calculate enhanced observation with velocity vectors and additional features
-        enhanced_obs = self.calculate_velocity_vectors(agent, obs)
-
-        # Agent Position (assuming one)
-        agent_x, agent_y = enhanced_obs[0, 1], enhanced_obs[0, 2]
-
-        # Agent heading (assuming one)
-        agent_dx, agent_dy = enhanced_obs[0, 3], enhanced_obs[0, 4]
-        
-        # Agent velocity
-        agent_vx, agent_vy = enhanced_obs[0, 5], enhanced_obs[0, 6]
-
-        # Position of zombie relative to archer
-        zombie_archer_x, zombie_archer_y = enhanced_obs[12, 1], enhanced_obs[12, 2] 
-        
-        # Zombie velocity 
-        zombie_vx, zombie_vy = enhanced_obs[12, 5], enhanced_obs[12, 6]
-
-        # returns closest distance to zombie and zombie index
-        min_distance, min_index = self.return_nearest_zombie(obs)
-
-        # Flatten and return the enhanced observation
-        flat_obs = enhanced_obs.flatten()
+        flat_obs = obs.flatten()
         return flat_obs
 
 class CustomPredictFunction(Callable):
@@ -490,7 +366,7 @@ if __name__ == "__main__":
     # Create the environment with a single archer
     num_agents = 1
     visual_observation = False
-    max_zombies = 10
+    max_zombies = 4
     
     print("Creating environment...")
     env = create_environment(

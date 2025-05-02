@@ -98,9 +98,9 @@ def train_with_tune(args):
     # Create the environment
     print("Creating environment for hyperparameter tuning...")
     env = create_environment(
-        num_agents=args.num_agents,
+        num_agents=1,
         visual_observation=False,
-        max_zombies=args.max_zombies,
+        max_zombies=1,
         max_cycles=1000
     )
     
