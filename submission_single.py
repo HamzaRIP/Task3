@@ -8,6 +8,29 @@ import numpy as np
 import torch
 from typing import Callable
 import matplotlib.pyplot as plt
+import sys
+
+# Get the absolute path to the module directory
+package_directory = os.path.dirname(os.path.abspath(__file__))
+
+from pettingzoo.utils import BaseWrapper
+from pettingzoo.utils.env import AgentID, ObsType
+from ray.rllib.algorithms.ppo import PPOConfig
+from ray.rllib.algorithms.ppo.torch.default_ppo_torch_rl_module import DefaultPPOTorchRLModule
+from ray.rllib.core.rl_module import RLModule, MultiRLModule
+from ray.rllib.core.rl_module import MultiRLModuleSpec, RLModuleSpec
+from ray.rllib.env.wrappers.pettingzoo_env import PettingZooEnv, ParallelPettingZooEnv
+from ray.tune.registry import register_env
+import pettingzoo
+import supersuit as ss
+
+
+# Import from local utils.py file using absolute path
+sys.path.append(package_directory)
+from utils import create_environment
+# Import our training monitor using absolute path
+sys.path.append(os.path.join(package_directory, "training"))
+from training_monitor import setup_training_monitor
 
 
 
@@ -28,115 +51,40 @@ from utils import create_environment
 # Import our training monitor
 from training.training_monitor import setup_training_monitor
 
-BATCH_SIZE = 1024        # No. steps collected for training in each batch, larger batches provide more stable gradients.
-LEARNING_RATE = 1e-4   # Gradient update step size, controls how quickly the neural network weights are adjusted.
+# batch_size: 2048
+# learning_rate: 0.0003
+# gamma: 0.99
+# lambda_: 0.9
+# kl_coeff: 0.2
+# clip_param: 0.1
+# vf_clip_param: 10.0
+# entropy_coeff: 0.005
+# num_sgd_iter: 10
+# hidden_layers: [256, 256, 128]
+
+
+BATCH_SIZE = 2048        # No. steps collected for training in each batch, larger batches provide more stable gradients.
+LEARNING_RATE = 0.0003   # Gradient update step size, controls how quickly the neural network weights are adjusted.
 GAMMA = 0.99           # Discount factor for future rewards, values closer to 1 place more importance on long-term rewards.
-LAMBDA = 0.95          # GAE (Generalized Advantage Estimation) parameter, controls bias-variance tradeoff in advantage estimation.
+LAMBDA = 0.9          # GAE (Generalized Advantage Estimation) parameter, controls bias-variance tradeoff in advantage estimation.
 KL_COEFF = 0.2         # Coeff for KL divergence penalty, prevents policy updates from changing too drastically from previous policy.
-CLIP_PARAM = 0.2       # PPO clipping parameter, limits policy ratio to prevent too large policy updates.
+CLIP_PARAM = 0.1       # PPO clipping parameter, limits policy ratio to prevent too large policy updates.
 VF_CLIP_PARAM = 10.0    # Value function clipping parameter, limits how much the value function estimates can change per update.
-ENTROPY_COEFF = 0.01   # Coeff for entropy bonus, encourages exploration by rewarding policies with higher action entropy.
+ENTROPY_COEFF = 0.005   # Coeff for entropy bonus, encourages exploration by rewarding policies with higher action entropy.
 NUM_SGD_ITER = 10      # No. SGD passes over the training data, determines how many times each batch is reused for optimization.
 
 HIDDEN_LAYERS = [256, 256, 128]
 
 class CustomWrapper(BaseWrapper):
-    """
-    Custom wrapper for the KAZ environment that flattens the observation space
-    and adds feature engineering for better agent performance.
-    See: https://pettingzoo.farama.org/content/environment_creation/
-    """
+    # This is an example of a custom wrapper that flattens the symbolic vector state of the environment
+    # Wrapper are useful to inject state pre-processing or feature that does not need to be learned by the agent
 
-    def __init__(self, env):
-        super().__init__(env)
-        self.prev_obs = {}  # Store previous observations for each agent
-
-    def reset(self, **kwargs):
-        self.prev_obs = {}  # Reset stored observations
-        return super().reset(**kwargs)
-
-    # Define the environment  (not sure about this??)
-    def observation_space(self, agent: AgentID):
-        num_entities = 22  # Set this to the correct number of rows in your obs array
-        num_features = 7   # 5 original + 2 velocity
-        return spaces.Box(low=-np.inf, high=np.inf, shape=(num_entities * num_features,), dtype=np.float32)
-
-    def return_nearest_zombie(self, obs):
-        """Returns the distance and the index to the closest zombie, else 1 and -1"""
-        num_zombies = 10
-        min_distance = float('inf')
-        min_index = -1
-        for i in range(12, 12 + num_zombies):
-            relative_distance = obs[i, 0] if obs[i, 0] > 0 else 1
-            if relative_distance < min_distance:
-                min_distance = relative_distance
-                min_index = i
-        return min_distance, min_index
-
-    def calculate_velocity_vectors(self, agent: AgentID, obs: np.ndarray) -> np.ndarray:
-        # Create enhanced observation array with two extra columns for velocity
-        enhanced_obs = np.zeros((obs.shape[0], 7), dtype=obs.dtype)
-        
-        # Copy the original 5 features
-        enhanced_obs[:, :5] = obs
-        
-        # Calculate velocities if we have previous observation
-        if agent in self.prev_obs:
-            prev_obs = self.prev_obs[agent]
-            
-            # Calculate velocity as position difference
-            # Use min to handle different sizes of observations
-            min_rows = min(obs.shape[0], prev_obs.shape[0])
-            
-            # x velocity = current x position - previous x position
-            enhanced_obs[:min_rows, 5] = np.clip((obs[:min_rows, 1] - prev_obs[:min_rows, 1]) * 30, -1, 1)
-            
-            # y velocity = current y position - previous y position
-            enhanced_obs[:min_rows, 6] = np.clip((obs[:min_rows, 2] - prev_obs[:min_rows, 2]) * 40, -1, 1)
-        
-        x_velocity = enhanced_obs[12, 5]
-        y_velocity = enhanced_obs[12, 6]
-
-        print(f"velocities: {x_velocity:4f}, {y_velocity:4f}")
-
-        # Store current observation for next step
-        self.prev_obs[agent] = obs.copy()
-        
-        return enhanced_obs
-        
+    def observation_space(self, agent: AgentID) -> gymnasium.spaces.Space:
+        return  spaces.flatten_space(super().observation_space(agent))
 
     def observe(self, agent: AgentID) -> ObsType | None:
         obs = super().observe(agent)
-        if obs is None:
-            return None
-
-        # Calculate enhanced observation with velocity vectors
-        enhanced_obs = self.calculate_velocity_vectors(agent, obs)
-
-        # print(enhanced_obs)
-
-        # Agent Position (assuming one)
-        agent_x, agent_y = enhanced_obs[0, 1], enhanced_obs[0, 2]
-
-        # Agent heading (assuming one)
-        agent_dx, agent_dy = enhanced_obs[0, 3], enhanced_obs[0, 4]
-        
-        # Agent velocity
-        agent_vx, agent_vy = enhanced_obs[0, 5], enhanced_obs[0, 6]
-
-        # Position of zombie relative to archer
-        zombie_archer_x, zombie_archer_y = enhanced_obs[12, 1], enhanced_obs[12, 2] 
-        
-        # Zombie velocity 
-        zombie_vx, zombie_vy = enhanced_obs[12, 5], enhanced_obs[12, 6]
-
-        # returns closest distance to zombie and zombie index
-        min_distance, min_index = self.return_nearest_zombie(obs)
-
-        # print(f"min distance: {min_distance}, min index: {min_index}")
-
-        # Flatten and return the enhanced observation
-        flat_obs = enhanced_obs.flatten()
+        flat_obs = obs.flatten()
         return flat_obs
 
 class CustomPredictFunction(Callable):
@@ -145,8 +93,10 @@ class CustomPredictFunction(Callable):
     Loads a trained RLLib algorithm from a checkpoint and extracts the policies.
     """
     def __init__(self, env):
-        # Load the trained model from checkpoint
-        checkpoint_path = (Path("results") / "learner_group" / "learner" / "rl_module").resolve()
+        # Get the absolute path to the module directory
+        package_directory = os.path.dirname(os.path.abspath(__file__))
+        # Load the trained model from checkpoint using absolute path
+        checkpoint_path = os.path.join(package_directory, "results", "learner_group", "learner", "rl_module")
         self.modules = MultiRLModule.from_checkpoint(checkpoint_path)
     
     def __call__(self, observation, agent, *args, **kwargs):
@@ -227,7 +177,10 @@ def train_archer_agent(env, checkpoint_path, max_iterations=1000, plot_dir="./tr
     """
     # Set up training monitor
     if monitor is None:
-        from training.training_monitor import setup_training_monitor
+        # Get the absolute path to the module directory
+        package_directory = os.path.dirname(os.path.abspath(__file__))
+        sys.path.append(os.path.join(package_directory, "training"))
+        from training_monitor import setup_training_monitor
         monitor = setup_training_monitor(save_dir=plot_dir, log_interval=1, live_plot=True)
     
     # Convert AEC environment to parallel for RLlib
@@ -413,7 +366,7 @@ if __name__ == "__main__":
     # Create the environment with a single archer
     num_agents = 1
     visual_observation = False
-    max_zombies = 10
+    max_zombies = 4
     
     print("Creating environment...")
     env = create_environment(

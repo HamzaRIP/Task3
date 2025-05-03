@@ -8,17 +8,12 @@ Usage:
 
 """
 import sys
-import os
-os.environ["PYTHONWARNINGS"] = "ignore::DeprecationWarning"
 import argparse
 import logging
 import importlib.util
+
 import pygame
 
-# Get the absolute path to the module directory and parent directory
-package_directory = os.path.dirname(os.path.abspath(__file__))
-parent_directory = os.path.dirname(package_directory)
-sys.path.append(parent_directory)
 from utils import create_environment
 
 
@@ -101,16 +96,11 @@ def main(argv=None):
         CustomWrapper = Agent.CustomWrapper
         CustomPredictFunction = Agent.CustomPredictFunction
     else:
-        print("Loading submission_single.py")
-        from submission_single import CustomWrapper, CustomPredictFunction
+        from submission_single_example_rllib import CustomWrapper, CustomPredictFunction
 
-    max_zombies = 10
     # Create the PettingZoo environment for evaluation (with rendering)
-    env = create_environment(num_agents=num_agents,
-                            visual_observation=visual_observation,
-                            max_zombies=max_zombies,
-                            max_cycles=1000,
-                            render_mode=render_mode)
+    env = create_environment(num_agents=num_agents, render_mode=render_mode,
+                             visual_observation=visual_observation)
     env = CustomWrapper(env)
 
     # Loading best checkpoint and evaluating
