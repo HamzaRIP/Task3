@@ -1,5 +1,7 @@
 import os
 os.environ["PYTHONWARNINGS"] = "ignore::DeprecationWarning"
+# Set Ray's temporary directory to a location with more space
+os.environ["TMPDIR"] = os.path.expanduser("~/ray_tmp")  # This will create a directory in your home folder
 
 import gymnasium
 from gymnasium import spaces
@@ -76,16 +78,156 @@ NUM_SGD_ITER = 10      # No. SGD passes over the training data, determines how m
 HIDDEN_LAYERS = [256, 256, 128]
 
 class CustomWrapper(BaseWrapper):
-    # This is an example of a custom wrapper that flattens the symbolic vector state of the environment
-    # Wrapper are useful to inject state pre-processing or feature that does not need to be learned by the agent
+    def __init__(self, env):
+        super().__init__(env)
+        self._observation_space = None
+        self._initialized = False
+        
+        # Get environment parameters from the environment's configuration
+        self.max_zombies = 4  # Default value from create_environment
+        self.num_archers = 1  # Default value from create_environment
 
     def observation_space(self, agent: AgentID) -> gymnasium.spaces.Space:
-        return  spaces.flatten_space(super().observation_space(agent))
+        if not self._initialized:
+            # Initialize observation space on first access
+            original_space = spaces.flatten_space(self.env.observation_space(agent))
+            self._observation_space = spaces.Box(
+                low=-np.inf,
+                high=np.inf,
+                shape=(original_space.shape[0] + 8,),  # Adding 8 new features
+                dtype=np.float32
+            )
+            self._initialized = True
+        return self._observation_space
+
+    def _process_observation(self, obs):
+        """
+        Process the raw observation into enhanced features.
+        
+        Args:
+            obs: Raw observation array of shape (N+1)x5
+            
+        Returns:
+            Enhanced observation array with additional features
+        """
+        # Get the current agent's position and heading
+        current_agent = obs[0]
+        agent_pos = current_agent[1:3]  # x, y position
+        agent_heading = current_agent[3:5]  # heading vector
+        
+        # Get zombie and archer rows
+        zombie_rows = obs[-(self.max_zombies):]  # Last max_zombies rows
+        archer_rows = obs[1:self.num_archers + 1]  # Rows after current agent
+        
+        # Filter out empty rows (where distance is 0)
+        zombie_data = [(row[0], row[1:3], row[3:5]) for row in zombie_rows if row[0] > 0]
+        archer_data = [(row[0], row[1:3], row[3:5]) for row in archer_rows if row[0] > 0]
+        
+        # 1. Calculate zombie threat level (weighted by distance and number)
+        zombie_threat = 0.0
+        if zombie_data:
+            distances = [d for d, _, _ in zombie_data]
+            zombie_threat = sum(1/d for d in distances if d < 0.5)  # Closer zombies contribute more to threat
+        
+        # 2. Calculate safe space score (distance from nearest entity)
+        all_distances = [d for d, _, _ in zombie_data + archer_data]
+        safe_space = min(all_distances) if all_distances else 1.0
+        
+        # 3. Calculate optimal shooting angle
+        optimal_angle = 0.0
+        if zombie_data:
+            # Find nearest zombie
+            nearest_zombie = min(zombie_data, key=lambda x: x[0])
+            zombie_pos = nearest_zombie[1]
+            # Calculate angle between agent heading and vector to zombie
+            to_zombie = zombie_pos - agent_pos
+            to_zombie = to_zombie / np.linalg.norm(to_zombie)
+            optimal_angle = np.dot(agent_heading, to_zombie)
+        
+        # 4. Calculate zombie clustering (how spread out are the zombies)
+        zombie_clustering = 0.0
+        if len(zombie_data) > 1:
+            zombie_positions = [pos for _, pos, _ in zombie_data]
+            # Calculate average distance between zombies
+            distances = []
+            for i in range(len(zombie_positions)):
+                for j in range(i+1, len(zombie_positions)):
+                    dist = np.linalg.norm(zombie_positions[i] - zombie_positions[j])
+                    distances.append(dist)
+            zombie_clustering = np.mean(distances) if distances else 1.0
+        
+        # 5. Calculate escape route score (how many directions are blocked)
+        escape_score = 0.0
+        if zombie_data:
+            # Check 8 directions around the agent
+            directions = [
+                (1,0), (1,1), (0,1), (-1,1),
+                (-1,0), (-1,-1), (0,-1), (1,-1)
+            ]
+            for dx, dy in directions:
+                direction = np.array([dx, dy])
+                direction = direction / np.linalg.norm(direction)
+                # Check if any zombie is in this direction
+                blocked = any(
+                    np.dot(zombie_pos - agent_pos, direction) > 0.7
+                    for _, zombie_pos, _ in zombie_data
+                )
+                if not blocked:
+                    escape_score += 1
+            escape_score /= 8.0  # Normalize to [0,1]
+        
+        # 6. Calculate zombie movement prediction
+        zombie_movement = 0.0
+        if zombie_data:
+            # Calculate average zombie velocity (heading)
+            zombie_velocities = [vel for _, _, vel in zombie_data]
+            avg_velocity = np.mean(zombie_velocities, axis=0)
+            # Project onto agent's position to predict if zombies are moving towards agent
+            to_agent = agent_pos - np.array([0.5, 0.5])  # Center of the map
+            zombie_movement = np.dot(avg_velocity, to_agent)
+        
+        # 7. Calculate tactical position score
+        tactical_score = 0.0
+        if zombie_data:
+            # Prefer positions that are not surrounded by zombies
+            zombie_positions = [pos for _, pos, _ in zombie_data]
+            center = np.mean(zombie_positions, axis=0)
+            # Score is higher when agent is not in the center of zombie cluster
+            tactical_score = 1.0 - np.linalg.norm(agent_pos - center)
+        
+        # 8. Calculate shooting opportunity score
+        shooting_score = 0.0
+        if zombie_data:
+            # Find zombies that are in a good position to shoot
+            for dist, pos, _ in zombie_data:
+                if dist < 0.5:  # Only consider close zombies
+                    to_zombie = pos - agent_pos
+                    to_zombie = to_zombie / np.linalg.norm(to_zombie)
+                    alignment = np.dot(agent_heading, to_zombie)
+                    if alignment > 0.8:  # Good alignment for shooting
+                        shooting_score += 1
+            shooting_score = min(shooting_score / len(zombie_data), 1.0)
+        
+        # Combine all features
+        enhanced_features = [
+            zombie_threat,
+            safe_space,
+            optimal_angle,
+            zombie_clustering,
+            escape_score,
+            zombie_movement,
+            tactical_score,
+            shooting_score
+        ]
+        
+        # Combine original observation with enhanced features
+        return np.concatenate([obs.flatten(), enhanced_features])
 
     def observe(self, agent: AgentID) -> ObsType | None:
         obs = super().observe(agent)
-        flat_obs = obs.flatten()
-        return flat_obs
+        if obs is None:
+            return None
+        return self._process_observation(obs)
 
 class CustomPredictFunction(Callable):
     """
