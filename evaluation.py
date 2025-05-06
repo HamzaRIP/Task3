@@ -74,18 +74,21 @@ def main(argv=None):
                               'rllib_student_code_to_submit.'))
     parser.add_argument('--screen', '-s', action='store_true',
                         help='Set render mode to human (show game)')
+    parser.add_argument('--num-agents', '-n', type=int, default=2,
+                        help='Number of agents to use (default: 2)')
     args = parser.parse_args(argv)
 
     logger.setLevel(max(logging.INFO - 10 * (args.verbose - args.quiet), logging.DEBUG))
     logger.addHandler(logging.StreamHandler(sys.stdout))
 
-    num_agents = 1
+    num_agents = args.num_agents
     visual_observation = False
     render_mode = "human" if args.screen else None # "human" or None
     logger.info(f'Show game: {render_mode}')
     if render_mode == "human":
         logger.info(f'Press q to end game')
     logger.info(f'Use pixels: {visual_observation}')
+    logger.info(f'Number of agents: {num_agents}')
 
     # Loading student submitted code
     if args.load is not None:
@@ -99,13 +102,17 @@ def main(argv=None):
         from submission_single_example_rllib import CustomWrapper, CustomPredictFunction
 
     # Create the PettingZoo environment for evaluation (with rendering)
-    env = create_environment(num_agents=num_agents, render_mode=render_mode,
-                             visual_observation=visual_observation)
+    env = create_environment(
+        num_agents=num_agents,
+        render_mode=render_mode,
+        visual_observation=visual_observation,
+        max_zombies=6  # Match the training configuration
+    )
     env = CustomWrapper(env)
 
     # Loading best checkpoint and evaluating
     random_seeds = list(range(100)) # We will be using different seeds for evaluation
-    evaluate(env, CustomPredictFunction(env), seed_games=random_seeds) 
+    evaluate(env, CustomPredictFunction(env), seed_games=random_seeds)
 
 
 if __name__ == "__main__":
