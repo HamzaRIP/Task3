@@ -84,17 +84,18 @@ class CustomWrapper(BaseWrapper):
         self._initialized = False
         
         # Get environment parameters from the environment's configuration
-        self.max_zombies = 4  # Default value from create_environment
-        self.num_archers = 1  # Default value from create_environment
+        self.max_zombies = env.unwrapped.max_zombies if hasattr(env.unwrapped, 'max_zombies') else 4
+        self.num_archers = env.unwrapped.num_archers if hasattr(env.unwrapped, 'num_archers') else 1
 
     def observation_space(self, agent: AgentID) -> gymnasium.spaces.Space:
         if not self._initialized:
             # Initialize observation space on first access
             original_space = spaces.flatten_space(self.env.observation_space(agent))
+            # The model expects 68 input features
             self._observation_space = spaces.Box(
                 low=-np.inf,
                 high=np.inf,
-                shape=(original_space.shape[0] + 8,),  # Adding 8 new features
+                shape=(68,),  # Fixed size to match trained model
                 dtype=np.float32
             )
             self._initialized = True
@@ -221,7 +222,18 @@ class CustomWrapper(BaseWrapper):
         ]
         
         # Combine original observation with enhanced features
-        return np.concatenate([obs.flatten(), enhanced_features])
+        original_features = obs.flatten()
+        combined_features = np.concatenate([original_features, enhanced_features])
+        
+        # Ensure the output has exactly 68 features
+        if len(combined_features) < 68:
+            # Pad with zeros if too short
+            combined_features = np.pad(combined_features, (0, 68 - len(combined_features)))
+        elif len(combined_features) > 68:
+            # Truncate if too long
+            combined_features = combined_features[:68]
+            
+        return combined_features
 
     def observe(self, agent: AgentID) -> ObsType | None:
         obs = super().observe(agent)
