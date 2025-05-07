@@ -106,7 +106,7 @@ def main(argv=None):
         num_agents=num_agents,
         render_mode=render_mode,
         visual_observation=visual_observation,
-        max_zombies=6  # Match the training configuration
+        max_zombies=4  # Match the training configuration
     )
     env = CustomWrapper(env)
 

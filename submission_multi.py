@@ -11,6 +11,7 @@ import torch
 from typing import Callable
 import matplotlib.pyplot as plt
 import sys
+import argparse
 
 # Get the absolute path to the module directory
 package_directory = os.path.dirname(os.path.abspath(__file__))
@@ -86,244 +87,26 @@ class CustomWrapper(BaseWrapper):
         # Get environment parameters from the environment's configuration
         self.max_zombies = 4  # Default value from create_environment
         self.num_archers = 2  # Updated for multi-agent
-        
-        # Spacing parameters
-        self.optimal_spacing = 0.3  # Optimal distance between agents (normalized to [0,1])
-        self.spacing_reward_weight = 0.5  # Weight for spacing reward
-        self.min_spacing = 0.1  # Minimum acceptable spacing
-        self.max_spacing = 0.5  # Maximum spacing before penalty
 
     def observation_space(self, agent: AgentID) -> gymnasium.spaces.Space:
         if not self._initialized:
             # Initialize observation space on first access
             original_space = spaces.flatten_space(self.env.observation_space(agent))
-            self._observation_space = spaces.Box(
-                low=-np.inf,
-                high=np.inf,
-                shape=(original_space.shape[0] + 8,),  # Adding 8 new features
-                dtype=np.float32
-            )
+            self._observation_space = original_space
             self._initialized = True
         return self._observation_space
-
-    def _calculate_spacing_reward(self, agent_positions):
-        """
-        Calculate reward based on spacing between agents.
-        Returns positive reward for good spacing, negative for poor spacing.
-        """
-        if len(agent_positions) < 2:
-            return 0.0
-            
-        # Calculate distances between all pairs of agents
-        total_reward = 0.0
-        for i in range(len(agent_positions)):
-            for j in range(i + 1, len(agent_positions)):
-                pos1 = agent_positions[i]
-                pos2 = agent_positions[j]
-                distance = abs(pos1[0] - pos2[0])  # Only consider x-axis distance
-                
-                # Reward structure:
-                # - Penalty if too close (below min_spacing)
-                # - Maximum reward at optimal_spacing
-                # - Slight penalty if too far apart (above max_spacing)
-                if distance < self.min_spacing:
-                    reward = -1.0 * (self.min_spacing - distance) / self.min_spacing
-                elif distance > self.max_spacing:
-                    reward = -0.5 * (distance - self.max_spacing) / (1.0 - self.max_spacing)
-                else:
-                    # Quadratic reward centered at optimal_spacing
-                    reward = 1.0 - ((distance - self.optimal_spacing) / self.optimal_spacing) ** 2
-                
-                total_reward += reward
-                
-        return total_reward / (len(agent_positions) * (len(agent_positions) - 1) / 2)
-
-    def _process_observation(self, obs):
-        """
-        Process the raw observation into enhanced features.
-        
-        Args:
-            obs: Raw observation array of shape (N+1)x5
-            
-        Returns:
-            Enhanced observation array with additional features
-        """
-        # Get the current agent's position and heading
-        current_agent = obs[0]
-        agent_pos = current_agent[1:3]  # x, y position
-        agent_heading = current_agent[3:5]  # heading vector
-        
-        # Get zombie and archer rows
-        zombie_rows = obs[-(self.max_zombies):]  # Last max_zombies rows
-        archer_rows = obs[1:self.num_archers + 1]  # Rows after current agent
-        
-        # Filter out empty rows (where distance is 0)
-        zombie_data = [(row[0], row[1:3], row[3:5]) for row in zombie_rows if row[0] > 0]
-        archer_data = [(row[0], row[1:3], row[3:5]) for row in archer_rows if row[0] > 0]
-        
-        # Get all agent positions for spacing calculation
-        agent_positions = [pos for _, pos, _ in archer_data]
-        agent_positions.append(agent_pos)  # Add current agent's position
-        
-        # Calculate spacing reward
-        spacing_reward = self._calculate_spacing_reward(agent_positions)
-        
-        # 1. Calculate zombie threat level (weighted by distance and number)
-        zombie_threat = 0.0
-        if zombie_data:
-            distances = [d for d, _, _ in zombie_data]
-            zombie_threat = sum(1/d for d in distances if d < 0.5)  # Closer zombies contribute more to threat
-        
-        # 2. Calculate safe space score (distance from nearest entity)
-        all_distances = [d for d, _, _ in zombie_data + archer_data]
-        safe_space = min(all_distances) if all_distances else 1.0
-        
-        # 3. Calculate optimal shooting angle
-        optimal_angle = 0.0
-        if zombie_data:
-            # Find nearest zombie
-            nearest_zombie = min(zombie_data, key=lambda x: x[0])
-            zombie_pos = nearest_zombie[1]
-            # Calculate angle between agent heading and vector to zombie
-            to_zombie = zombie_pos - agent_pos
-            to_zombie = to_zombie / np.linalg.norm(to_zombie)
-            optimal_angle = np.dot(agent_heading, to_zombie)
-        
-        # 4. Calculate zombie clustering (how spread out are the zombies)
-        zombie_clustering = 0.0
-        if len(zombie_data) > 1:
-            zombie_positions = [pos for _, pos, _ in zombie_data]
-            # Calculate average distance between zombies
-            distances = []
-            for i in range(len(zombie_positions)):
-                for j in range(i+1, len(zombie_positions)):
-                    dist = np.linalg.norm(zombie_positions[i] - zombie_positions[j])
-                    distances.append(dist)
-            zombie_clustering = np.mean(distances) if distances else 1.0
-        
-        # 5. Calculate escape route score (how many directions are blocked)
-        escape_score = 0.0
-        if zombie_data:
-            # Check 8 directions around the agent
-            directions = [
-                (1,0), (1,1), (0,1), (-1,1),
-                (-1,0), (-1,-1), (0,-1), (1,-1)
-            ]
-            for dx, dy in directions:
-                direction = np.array([dx, dy])
-                direction = direction / np.linalg.norm(direction)
-                # Check if any zombie is in this direction
-                blocked = any(
-                    np.dot(zombie_pos - agent_pos, direction) > 0.7
-                    for _, zombie_pos, _ in zombie_data
-                )
-                if not blocked:
-                    escape_score += 1
-            escape_score /= 8.0  # Normalize to [0,1]
-        
-        # 6. Calculate zombie movement prediction
-        zombie_movement = 0.0
-        if zombie_data:
-            # Calculate average zombie velocity (heading)
-            zombie_velocities = [vel for _, _, vel in zombie_data]
-            avg_velocity = np.mean(zombie_velocities, axis=0)
-            # Project onto agent's position to predict if zombies are moving towards agent
-            to_agent = agent_pos - np.array([0.5, 0.5])  # Center of the map
-            zombie_movement = np.dot(avg_velocity, to_agent)
-        
-        # 7. Calculate tactical position score
-        tactical_score = 0.0
-        if zombie_data:
-            # Prefer positions that are not surrounded by zombies
-            zombie_positions = [pos for _, pos, _ in zombie_data]
-            center = np.mean(zombie_positions, axis=0)
-            # Score is higher when agent is not in the center of zombie cluster
-            tactical_score = 1.0 - np.linalg.norm(agent_pos - center)
-        
-        # 8. Calculate shooting opportunity score
-        shooting_score = 0.0
-        if zombie_data:
-            # Find zombies that are in a good position to shoot
-            for dist, pos, _ in zombie_data:
-                if dist < 0.5:  # Only consider close zombies
-                    to_zombie = pos - agent_pos
-                    to_zombie = to_zombie / np.linalg.norm(to_zombie)
-                    alignment = np.dot(agent_heading, to_zombie)
-                    if alignment > 0.8:  # Good alignment for shooting
-                        shooting_score += 1
-            shooting_score = min(shooting_score / len(zombie_data), 1.0)
-        
-        # Combine all features
-        enhanced_features = [
-            zombie_threat,
-            safe_space,
-            optimal_angle,
-            zombie_clustering,
-            escape_score,
-            zombie_movement,
-            tactical_score,
-            shooting_score
-        ]
-        
-        # Combine original observation with enhanced features
-        return np.concatenate([obs.flatten(), enhanced_features])
 
     def observe(self, agent: AgentID) -> ObsType | None:
         obs = super().observe(agent)
         if obs is None:
             return None
-        return self._process_observation(obs)
+        return obs.flatten()  # Just flatten the observation without additional processing
 
     def step(self, action):
         """
-        Step the environment and add spacing rewards.
+        Step the environment.
         """
-        # Get the current agent's observation before stepping
-        current_agent = self.env.agent_selection
-        agent_positions = []
-        for a in self.env.agents:
-            agent_obs = self.env.observe(a)
-            if agent_obs is not None:
-                agent_pos = agent_obs[0][1:3]  # x, y position
-                agent_positions.append(agent_pos)
-        
-        # Step the environment
-        self.env.step(action)
-        
-        # Get the new observation and reward
-        obs = self.env.observe(current_agent)
-        
-        # Handle both AEC and parallel environment cases
-        if hasattr(self.env, 'rewards'):
-            # AEC environment case
-            reward = self.env.rewards.get(current_agent, 0.0)
-        else:
-            # Parallel environment case
-            reward = 0.0
-            for agent in self.env.agents:
-                if agent == current_agent:
-                    reward = self.env.get_reward(agent)
-                    break
-        
-        termination = self.env.terminations.get(current_agent, False)
-        truncation = self.env.truncations.get(current_agent, False)
-        info = self.env.infos.get(current_agent, {})
-        
-        # Add spacing reward if the episode is not done
-        if not termination and not truncation:
-            # Get updated agent positions
-            new_agent_positions = []
-            for a in self.env.agents:
-                agent_obs = self.env.observe(a)
-                if agent_obs is not None:
-                    agent_pos = agent_obs[0][1:3]  # x, y position
-                    new_agent_positions.append(agent_pos)
-            
-            # Calculate and add spacing reward
-            spacing_reward = self._calculate_spacing_reward(new_agent_positions)
-            reward += self.spacing_reward_weight * spacing_reward
-        
-        return obs, reward, termination, truncation, info
+        return self.env.step(action)
 
 class CustomPredictFunction(Callable):
     """
@@ -359,11 +142,13 @@ def algo_config(id_env, env, policies, policies_to_train):
             enable_env_runner_and_connector_v2=True,
         )
         .environment(env=id_env, disable_env_checking=True)
-        .env_runners(num_env_runners=4)  # Increased number of environment runners for parallel training
+        .env_runners(num_env_runners=4)  # Increased number of environment runners for better parallelization
         .multi_agent(
             policies={x for x in policies},
             policy_mapping_fn=lambda agent_id, *args, **kwargs: agent_id,
             policies_to_train=policies_to_train,
+            # Enable observation sharing between agents
+            observation_fn=lambda obs, agent_id: obs,
         )
         .rl_module(
             rl_module_spec=MultiRLModuleSpec(
@@ -375,7 +160,14 @@ def algo_config(id_env, env, policies, policies_to_train):
                         model_config={
                             "fcnet_hiddens": HIDDEN_LAYERS,
                             "fcnet_activation": "relu",
-                            "input_dim": env.observation_space(x).shape[0]
+                            "input_dim": env.observation_space(x).shape[0],
+                            # IPPO-specific model settings
+                            "use_centralized_critic": True,
+                            "centralized_critic_obs_dim": env.observation_space(x).shape[0] * len(policies),
+                            "centralized_critic_hidden_layers": [384, 256],
+                            "centralized_critic": True,  # Enable centralized critic at model level
+                            "use_layer_norm": True,  # Add layer normalization for stability
+                            "shared_layers": True,  # Share layers between policy and value function
                         }
                     )
                     for x in policies
@@ -392,9 +184,11 @@ def algo_config(id_env, env, policies, policies_to_train):
             vf_clip_param=VF_CLIP_PARAM,
             entropy_coeff=ENTROPY_COEFF,
             num_epochs=NUM_SGD_ITER,
-            # Add IPPO-specific parameters
+            # IPPO-specific training parameters
             use_gae=True,
             use_critic=True,
+            # Additional training parameters
+            grad_clip=0.5,  # Gradient clipping for stability
         )
         .debugging(log_level="ERROR")
     )
@@ -402,7 +196,7 @@ def algo_config(id_env, env, policies, policies_to_train):
 
 # And when creating the algorithm:
 
-def train_archer_agent(env, checkpoint_path, max_iterations=1000, plot_dir="./training_plots", monitor=None):
+def train_archer_agent(env, checkpoint_path, max_iterations=3000, plot_dir="./training_plots", monitor=None, live_plot=True):
     """
     Train multiple archer agents using IPPO.
     
@@ -412,6 +206,7 @@ def train_archer_agent(env, checkpoint_path, max_iterations=1000, plot_dir="./tr
         max_iterations: Maximum number of training iterations
         plot_dir: Directory to save training plots
         monitor: Optional TrainingMonitor instance (for live comparison)
+        live_plot: Whether to show live training plots
         
     Returns:
         Trained algorithm
@@ -422,7 +217,7 @@ def train_archer_agent(env, checkpoint_path, max_iterations=1000, plot_dir="./tr
         package_directory = os.path.dirname(os.path.abspath(__file__))
         sys.path.append(os.path.join(package_directory, "training"))
         from training_monitor import setup_training_monitor
-        monitor = setup_training_monitor(save_dir=plot_dir, log_interval=1, live_plot=True)
+        monitor = setup_training_monitor(save_dir=plot_dir, log_interval=1, live_plot=live_plot)
     
     # Convert AEC environment to parallel for RLlib
     rllib_env = ParallelPettingZooEnv(pettingzoo.utils.conversions.aec_to_parallel(env))
@@ -629,10 +424,15 @@ def compare_with_baselines(env, trained_agent, num_episodes=10):
 
 
 if __name__ == "__main__":
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description='Train and evaluate multi-agent archers')
+    parser.add_argument('--no-live-plot', action='store_true', help='Disable live training plots')
+    args = parser.parse_args()
+    
     # Create the environment with multiple archers
     num_agents = 2  # Number of archer agents
     visual_observation = False
-    max_zombies = 6  # Increased number of zombies for multiple agents
+    max_zombies = 4
     
     print("Creating environment...")
     env = create_environment(
@@ -649,9 +449,15 @@ if __name__ == "__main__":
     checkpoint_path = str(Path("results").resolve())
     plot_dir = str(Path("training_plots").resolve())
     
-    # Train the agents with visualization
+    # Train the agents
     print("Training agents...")
-    algo = train_archer_agent(env, checkpoint_path, max_iterations=500, plot_dir=plot_dir)
+    algo = train_archer_agent(
+        env, 
+        checkpoint_path, 
+        max_iterations=3000, 
+        plot_dir=plot_dir,
+        live_plot=not args.no_live_plot
+    )
     
     # Evaluate the trained agents
     print("\nEvaluating trained agents...")
