@@ -8,7 +8,11 @@ from gymnasium import spaces
 from pathlib import Path
 import numpy as np
 import torch
-from typing import Callable
+import torch.nn as nn
+import torch.optim as optim
+from collections import deque
+import random
+from typing import Callable, Tuple, List, Dict
 import matplotlib.pyplot as plt
 import sys
 
@@ -26,7 +30,6 @@ from ray.tune.registry import register_env
 import pettingzoo
 import supersuit as ss
 
-
 # Import from local utils.py file using absolute path
 sys.path.append(package_directory)
 from utils import create_environment
@@ -34,48 +37,326 @@ from utils import create_environment
 sys.path.append(os.path.join(package_directory, "training"))
 from training_monitor import setup_training_monitor
 
+# DQN Implementation
+class DQNNetwork(nn.Module):
+    def __init__(self, input_dim: int, output_dim: int, hidden_layers: List[int] = [512, 512, 256]):
+        super(DQNNetwork, self).__init__()
+        
+        # Build layers dynamically based on hidden_layers
+        layers = []
+        prev_dim = input_dim
+        
+        for hidden_dim in hidden_layers:
+            layers.extend([
+                nn.Linear(prev_dim, hidden_dim),
+                nn.ReLU(),
+                nn.LayerNorm(hidden_dim),
+                nn.Dropout(0.1)  # Add dropout for regularization
+            ])
+            prev_dim = hidden_dim
+        
+        # Output layer
+        layers.append(nn.Linear(prev_dim, output_dim))
+        
+        self.network = nn.Sequential(*layers)
+        
+        # Initialize weights using orthogonal initialization
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                nn.init.constant_(m.bias, 0)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.network(x)
 
+class ReplayBuffer:
+    def __init__(self, capacity: int):
+        self.buffer = deque(maxlen=capacity)
+    
+    def push(self, state: np.ndarray, action: int, reward: float, next_state: np.ndarray, done: bool):
+        self.buffer.append((state, action, reward, next_state, done))
+    
+    def sample(self, batch_size: int) -> Tuple:
+        state, action, reward, next_state, done = zip(*random.sample(self.buffer, batch_size))
+        return (np.array(state), np.array(action), np.array(reward), 
+                np.array(next_state), np.array(done))
+    
+    def __len__(self) -> int:
+        return len(self.buffer)
 
-from pettingzoo.utils import BaseWrapper
-from pettingzoo.utils.env import AgentID, ObsType
-from ray.rllib.algorithms.ppo import PPOConfig
-from ray.rllib.algorithms.ppo.torch.default_ppo_torch_rl_module import DefaultPPOTorchRLModule
-from ray.rllib.core.rl_module import RLModule, MultiRLModule
-from ray.rllib.core.rl_module import MultiRLModuleSpec, RLModuleSpec
-from ray.rllib.env.wrappers.pettingzoo_env import PettingZooEnv, ParallelPettingZooEnv
-from ray.tune.registry import register_env
-import pettingzoo
-import supersuit as ss
+class DQNAgent:
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        hidden_layers: List[int] = [64, 32, 16],
+        learning_rate: float = 0.0001,  # Reduced learning rate
+        gamma: float = 0.99,
+        epsilon_start: float = 1.0,
+        epsilon_end: float = 0.01,
+        epsilon_decay: float = 0.997,  # Slower decay
+        buffer_size: int = 200000,  # Larger buffer
+        batch_size: int = 128,  # Larger batch size
+        target_update: int = 5,  # More frequent target updates
+        device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    ):
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.batch_size = batch_size
+        self.gamma = gamma
+        self.epsilon = epsilon_start
+        self.epsilon_end = epsilon_end
+        self.epsilon_decay = epsilon_decay
+        self.target_update = target_update
+        self.device = device
+        
+        # Initialize networks
+        self.policy_net = DQNNetwork(state_dim, action_dim, hidden_layers).to(device)
+        self.target_net = DQNNetwork(state_dim, action_dim, hidden_layers).to(device)
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+        self.target_net.eval()
+        
+        # Initialize optimizer with gradient clipping
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=learning_rate, eps=1e-5)
+        
+        # Initialize replay buffer
+        self.memory = ReplayBuffer(buffer_size)
+        
+        # Training metrics
+        self.training_step = 0
+        self.episode_rewards = []
+        
+        # Reward scaling
+        self.reward_scale = 1.0
+        self.reward_mean = 0.0
+        self.reward_std = 1.0
+        self.reward_count = 0
+    
+    def update_reward_stats(self, reward: float):
+        """Update reward statistics for normalization."""
+        self.reward_count += 1
+        delta = reward - self.reward_mean
+        self.reward_mean += delta / self.reward_count
+        delta2 = reward - self.reward_mean
+        self.reward_std += (delta * delta2) / self.reward_count
+    
+    def normalize_reward(self, reward: float) -> float:
+        """Normalize reward using running statistics."""
+        if self.reward_count > 1:
+            return (reward - self.reward_mean) / (self.reward_std + 1e-8)
+        return reward
+    
+    def select_action(self, state: np.ndarray, training: bool = True) -> int:
+        if training and random.random() < self.epsilon:
+            return random.randrange(self.action_dim)
+        
+        with torch.no_grad():
+            state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+            q_values = self.policy_net(state)
+            return q_values.argmax().item()
+    
+    def update_epsilon(self):
+        self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
+    
+    def train_step(self) -> float:
+        if len(self.memory) < self.batch_size:
+            return 0.0
+        
+        # Sample from replay buffer
+        states, actions, rewards, next_states, dones = self.memory.sample(self.batch_size)
+        
+        # Convert to tensors
+        states = torch.FloatTensor(states).to(self.device)
+        actions = torch.LongTensor(actions).to(self.device)
+        rewards = torch.FloatTensor(rewards).to(self.device)
+        next_states = torch.FloatTensor(next_states).to(self.device)
+        dones = torch.FloatTensor(dones).to(self.device)
+        
+        # Normalize rewards
+        rewards = rewards * self.reward_scale
+        
+        # Compute current Q values
+        current_q_values = self.policy_net(states).gather(1, actions.unsqueeze(1))
+        
+        # Compute next Q values using Double DQN
+        with torch.no_grad():
+            # Select actions using policy network
+            next_actions = self.policy_net(next_states).max(1)[1].unsqueeze(1)
+            # Evaluate actions using target network
+            next_q_values = self.target_net(next_states).gather(1, next_actions)
+            target_q_values = rewards.unsqueeze(1) + (1 - dones.unsqueeze(1)) * self.gamma * next_q_values
+        
+        # Compute loss and update
+        loss = nn.MSELoss()(current_q_values, target_q_values)
+        
+        self.optimizer.zero_grad()
+        loss.backward()
+        # Clip gradients to prevent exploding gradients
+        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 1.0)
+        self.optimizer.step()
+        
+        # Update target network
+        self.training_step += 1
+        if self.training_step % self.target_update == 0:
+            self.target_net.load_state_dict(self.policy_net.state_dict())
+        
+        return loss.item()
+    
+    def save(self, path: str):
+        """Save the model checkpoint."""
+        # Create directory if it doesn't exist
+        directory = os.path.dirname(path)
+        if directory:  # Only create directory if path contains a directory
+            os.makedirs(directory, exist_ok=True)
+        torch.save({
+            'policy_net_state_dict': self.policy_net.state_dict(),
+            'target_net_state_dict': self.target_net.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'epsilon': self.epsilon,
+            'training_step': self.training_step,
+            'episode_rewards': self.episode_rewards
+        }, path)
+    
+    def load(self, path: str):
+        checkpoint = torch.load(path)
+        self.policy_net.load_state_dict(checkpoint['policy_net_state_dict'])
+        self.target_net.load_state_dict(checkpoint['target_net_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.epsilon = checkpoint['epsilon']
+        self.training_step = checkpoint['training_step']
+        self.episode_rewards = checkpoint['episode_rewards']
 
+def train_dqn(
+    env,
+    agent: DQNAgent,
+    num_episodes: int,
+    max_steps: int = 1000,
+    save_path: str = "dqn_checkpoint.pth",
+    save_interval: int = 100
+):
+    """
+    Train the DQN agent in the environment.
+    """
+    best_reward = float('-inf')
+    
+    for episode in range(num_episodes):
+        env.reset()
+        episode_reward = 0
+        
+        for step in range(max_steps):
+            # Get the current agent
+            agent_id = env.agents[0]  # We're using a single agent
+            
+            # Get observation for the current agent
+            state = env.observe(agent_id)
+            
+            # Select and perform action
+            action = agent.select_action(state)
+            env.step(action)
+            
+            # Get next state and reward
+            next_state = env.observe(agent_id)
+            reward = env.rewards[agent_id]
+            done = env.terminations[agent_id] or env.truncations[agent_id]
+            
+            # Update reward statistics
+            agent.update_reward_stats(reward)
+            
+            # Store transition in replay buffer
+            agent.memory.push(state, action, reward, next_state, done)
+            
+            # Move to next state
+            state = next_state
+            episode_reward += reward
+            
+            # Train the agent
+            loss = agent.train_step()
+            
+            if done:
+                break
+        
+        # Update exploration rate
+        agent.update_epsilon()
+        
+        # Store episode reward
+        agent.episode_rewards.append(episode_reward)
+        
+        # Save best model
+        if episode_reward > best_reward:
+            best_reward = episode_reward
+            agent.save(save_path)
+        
+        # Print progress
+        if (episode + 1) % 10 == 0:
+            avg_reward = np.mean(agent.episode_rewards[-10:])
+            print(f"Episode {episode + 1}/{num_episodes}, "
+                  f"Average Reward: {avg_reward:.2f}, "
+                  f"Epsilon: {agent.epsilon:.2f}, "
+                  f"Best Reward: {best_reward:.2f}")
+        
+        # Save model periodically
+        if (episode + 1) % save_interval == 0:
+            agent.save(save_path)
+    
+    return agent
 
-# Import from local utils.py file
-from utils import create_environment
-# Import our training monitor
-from training.training_monitor import setup_training_monitor
+def plot_training_progress(agent, save_path: str):
+    """Plot and save the training progress."""
+    plt.figure(figsize=(10, 5))
+    
+    # Plot episode rewards
+    plt.subplot(1, 2, 1)
+    plt.plot(agent.episode_rewards)
+    plt.title('Episode Rewards')
+    plt.xlabel('Episode')
+    plt.ylabel('Reward')
+    
+    # Plot moving average
+    window_size = 10
+    moving_avg = np.convolve(agent.episode_rewards, 
+                            np.ones(window_size)/window_size, 
+                            mode='valid')
+    plt.plot(moving_avg, label=f'{window_size}-episode moving average')
+    plt.legend()
+    
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
 
-# batch_size: 2048
-# learning_rate: 0.0003
-# gamma: 0.99
-# lambda_: 0.9
-# kl_coeff: 0.2
-# clip_param: 0.1
-# vf_clip_param: 10.0
-# entropy_coeff: 0.005
-# num_sgd_iter: 10
-# hidden_layers: [256, 256, 128]
-
-
-BATCH_SIZE = 2048        # No. steps collected for training in each batch, larger batches provide more stable gradients.
-LEARNING_RATE = 0.0003   # Gradient update step size, controls how quickly the neural network weights are adjusted.
-GAMMA = 0.99           # Discount factor for future rewards, values closer to 1 place more importance on long-term rewards.
-LAMBDA = 0.9          # GAE (Generalized Advantage Estimation) parameter, controls bias-variance tradeoff in advantage estimation.
-KL_COEFF = 0.2         # Coeff for KL divergence penalty, prevents policy updates from changing too drastically from previous policy.
-CLIP_PARAM = 0.1       # PPO clipping parameter, limits policy ratio to prevent too large policy updates.
-VF_CLIP_PARAM = 10.0    # Value function clipping parameter, limits how much the value function estimates can change per update.
-ENTROPY_COEFF = 0.005   # Coeff for entropy bonus, encourages exploration by rewarding policies with higher action entropy.
-NUM_SGD_ITER = 10      # No. SGD passes over the training data, determines how many times each batch is reused for optimization.
-
-HIDDEN_LAYERS = [256, 256, 128]
+def evaluate_dqn_agent(env, agent, num_episodes: int = 10):
+    """Evaluate the trained DQN agent."""
+    total_rewards = []
+    
+    for episode in range(num_episodes):
+        env.reset()
+        episode_reward = 0
+        done = False
+        
+        while not done:
+            # Get the current agent
+            agent_id = env.agents[0]  # We're using a single agent
+            
+            # Get observation for the current agent
+            state = env.observe(agent_id)
+            
+            # Select action
+            action = agent.select_action(state, training=False)
+            env.step(action)
+            
+            # Get next state and reward
+            next_state = env.observe(agent_id)
+            reward = env.rewards[agent_id]
+            done = env.terminations[agent_id] or env.truncations[agent_id]
+            
+            state = next_state
+            episode_reward += reward
+        
+        total_rewards.append(episode_reward)
+        print(f"Evaluation Episode {episode + 1}: Reward = {episode_reward}")
+    
+    mean_reward = np.mean(total_rewards)
+    print(f"Mean evaluation reward over {num_episodes} episodes: {mean_reward}")
+    return mean_reward
 
 class CustomWrapper(BaseWrapper):
     def __init__(self, env):
@@ -533,35 +814,58 @@ if __name__ == "__main__":
     # Apply custom wrapper
     env = CustomWrapper(env)
     
-    # Set up checkpoint path and plot directory
-    checkpoint_path = str(Path("results").resolve())
-    plot_dir = str(Path("training_plots").resolve())
+    # Reset the environment to initialize it
+    env.reset()
     
-    # Train the agent with visualization
-    print("Training agent...")
-    algo = train_archer_agent(env, checkpoint_path, max_iterations=500, plot_dir=plot_dir)
+    # Get state and action dimensions
+    state_dim = env.observation_space(env.agents[0]).shape[0]
+    action_dim = env.action_space(env.agents[0]).n
     
-    # Evaluate the trained agent
-    print("\nEvaluating trained agent...")
-    trained_agent = CustomPredictFunction(env)
-    mean_reward = evaluate_agent(env, num_episodes=10)
+    # Create DQN agent
+    dqn_agent = DQNAgent(
+        state_dim=state_dim,
+        action_dim=action_dim,
+        hidden_layers=[512, 512, 256],
+        learning_rate=0.0001,
+        gamma=0.99,
+        epsilon_start=1.0,
+        epsilon_end=0.01,
+        epsilon_decay=0.997,
+        buffer_size=200000,
+        batch_size=128,
+        target_update=5
+    )
     
-    # Compare with baselines
-    print("\nComparing with baselines...")
-    baseline_results = compare_with_baselines(env, trained_agent, num_episodes=10)
+    # Set up paths
+    checkpoint_dir = "checkpoints"
+    plot_dir = "plots"
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    os.makedirs(plot_dir, exist_ok=True)
     
-    # Print comparison results
-    print("\nComparison Results:")
-    for strategy, reward in baseline_results.items():
-        print(f"{strategy}: {reward}")
+    dqn_checkpoint_path = os.path.join(checkpoint_dir, "dqn_checkpoint.pth")
+    dqn_plot_path = os.path.join(plot_dir, "dqn_training_plot.png")
     
-    # Generate and display final results plot
-    plt.figure(figsize=(10, 6))
-    strategies = list(baseline_results.keys())
-    rewards = [baseline_results[s] for s in strategies]
+    # Train the DQN agent
+    print("Starting DQN training...")
+    dqn_agent = train_dqn(
+        env=env,
+        agent=dqn_agent,
+        num_episodes=1000,
+        max_steps=1000,
+        save_path=dqn_checkpoint_path,
+        save_interval=100
+    )
     
-    plt.bar(strategies, rewards)
-    plt.ylabel('Mean Reward')
-    plt.title('Strategy Comparison')
-    plt.savefig(f"{plot_dir}/strategy_comparison.png")
-    plt.show()
+    # Plot DQN training progress
+    plot_training_progress(dqn_agent, dqn_plot_path)
+    
+    # Evaluate the trained DQN agent
+    print("\nEvaluating trained DQN agent...")
+    dqn_mean_reward = evaluate_dqn_agent(env, dqn_agent, num_episodes=10)
+    
+    print(f"\nDQN Training completed. Final evaluation reward: {dqn_mean_reward}")
+    print(f"DQN Training plot saved to: {dqn_plot_path}")
+    print(f"DQN Model checkpoint saved to: {dqn_checkpoint_path}")
+    
+    # Continue with PPO training if desired
+    # ... [Keep existing PPO training code] ...
