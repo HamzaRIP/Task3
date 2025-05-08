@@ -86,6 +86,8 @@ class CustomWrapper(BaseWrapper):
         # Get environment parameters from the environment's configuration
         self.max_zombies = env.unwrapped.max_zombies if hasattr(env.unwrapped, 'max_zombies') else 4
         self.num_archers = env.unwrapped.num_archers if hasattr(env.unwrapped, 'num_archers') else 1
+        self.num_knights = env.unwrapped.num_knights if hasattr(env.unwrapped, 'num_knights') else 0
+        self.max_arrows = env.unwrapped.max_arrows if hasattr(env.unwrapped, 'max_arrows') else 10
 
     def observation_space(self, agent: AgentID) -> gymnasium.spaces.Space:
         if not self._initialized:
@@ -102,27 +104,52 @@ class CustomWrapper(BaseWrapper):
         return self._observation_space
 
     def _process_observation(self, obs):
-        """
-        Process the raw observation into enhanced features.
-        
-        Args:
-            obs: Raw observation array of shape (N+1)x5
-            
-        Returns:
-            Enhanced observation array with additional features
-        """
-        # Get the current agent's position and heading
+        # First row is current agent
         current_agent = obs[0]
-        agent_pos = current_agent[1:3]  # x, y position
-        agent_heading = current_agent[3:5]  # heading vector
+        agent_pos = current_agent[1:3]  # Normalized position [0,0] is top-left
+        agent_heading = current_agent[3:5]  # Unit vector heading
         
-        # Get zombie and archer rows
-        zombie_rows = obs[-(self.max_zombies):]  # Last max_zombies rows
-        archer_rows = obs[1:self.num_archers + 1]  # Rows after current agent
+        # Calculate indices for different entity types
+        num_archers = self.num_archers
+        num_knights = self.num_knights
+        num_swords = num_knights  # As specified
+        max_arrows = self.max_arrows
+        max_zombies = self.max_zombies
         
-        # Filter out empty rows (where distance is 0)
-        zombie_data = [(row[0], row[1:3], row[3:5]) for row in zombie_rows if row[0] > 0]
-        archer_data = [(row[0], row[1:3], row[3:5]) for row in archer_rows if row[0] > 0]
+        # Calculate row indices
+        archer_start = 1
+        archer_end = archer_start + num_archers
+        knight_start = archer_end
+        knight_end = knight_start + num_knights
+        sword_start = knight_end
+        sword_end = sword_start + num_swords
+        arrow_start = sword_end
+        arrow_end = arrow_start + max_arrows
+        zombie_start = arrow_end
+        zombie_end = zombie_start + max_zombies
+        
+        # Extract entity rows
+        archer_rows = obs[archer_start:archer_end]
+        knight_rows = obs[knight_start:knight_end]
+        sword_rows = obs[sword_start:sword_end]
+        arrow_rows = obs[arrow_start:arrow_end]
+        zombie_rows = obs[zombie_start:zombie_end]
+        
+        def process_entity_rows(rows):
+            entities = []
+            for row in rows:
+                if row[0] > 0:  # Check if entity exists
+                    distance = row[0]  # Absolute distance
+                    rel_pos = row[1:3]  # Relative position to agent
+                    abs_heading = row[3:5]  # Absolute heading
+                    entities.append((distance, rel_pos, abs_heading))
+            return entities
+        
+        zombie_data = process_entity_rows(zombie_rows)
+        archer_data = process_entity_rows(archer_rows)
+        knight_data = process_entity_rows(knight_rows)
+        sword_data = process_entity_rows(sword_rows)
+        arrow_data = process_entity_rows(arrow_rows)
         
         # 1. Calculate zombie threat level (weighted by distance and number)
         zombie_threat = 0.0
@@ -131,25 +158,24 @@ class CustomWrapper(BaseWrapper):
             zombie_threat = sum(1/d for d in distances if d < 0.5)  # Closer zombies contribute more to threat
         
         # 2. Calculate safe space score (distance from nearest entity)
-        all_distances = [d for d, _, _ in zombie_data + archer_data]
+        all_distances = []
+        for entity_data in [zombie_data, archer_data, knight_data, sword_data, arrow_data]:
+            all_distances.extend([d for d, _, _ in entity_data])
         safe_space = min(all_distances) if all_distances else 1.0
         
         # 3. Calculate optimal shooting angle
         optimal_angle = 0.0
         if zombie_data:
-            # Find nearest zombie
             nearest_zombie = min(zombie_data, key=lambda x: x[0])
-            zombie_pos = nearest_zombie[1]
-            # Calculate angle between agent heading and vector to zombie
-            to_zombie = zombie_pos - agent_pos
-            to_zombie = to_zombie / np.linalg.norm(to_zombie)
+            _, rel_pos, _ = nearest_zombie
+            to_zombie = rel_pos / np.linalg.norm(rel_pos)  # Normalize
             optimal_angle = np.dot(agent_heading, to_zombie)
         
         # 4. Calculate zombie clustering (how spread out are the zombies)
         zombie_clustering = 0.0
         if len(zombie_data) > 1:
-            zombie_positions = [pos for _, pos, _ in zombie_data]
-            # Calculate average distance between zombies
+            # Convert relative positions to absolute positions for clustering calculation
+            zombie_positions = [agent_pos + pos for _, pos, _ in zombie_data]
             distances = []
             for i in range(len(zombie_positions)):
                 for j in range(i+1, len(zombie_positions)):
@@ -160,18 +186,24 @@ class CustomWrapper(BaseWrapper):
         # 5. Calculate escape route score (how many directions are blocked)
         escape_score = 0.0
         if zombie_data:
-            # Check 8 directions around the agent
+            # Directions in the coordinate system where [0,0] is top-left
             directions = [
-                (1,0), (1,1), (0,1), (-1,1),
-                (-1,0), (-1,-1), (0,-1), (1,-1)
+                (1,0),   # right
+                (1,1),   # down-right
+                (0,1),   # down
+                (-1,1),  # down-left
+                (-1,0),  # left
+                (-1,-1), # up-left
+                (0,-1),  # up
+                (1,-1)   # up-right
             ]
             for dx, dy in directions:
                 direction = np.array([dx, dy])
                 direction = direction / np.linalg.norm(direction)
-                # Check if any zombie is in this direction
+                # Check if any zombie is in this direction using relative positions
                 blocked = any(
-                    np.dot(zombie_pos - agent_pos, direction) > 0.7
-                    for _, zombie_pos, _ in zombie_data
+                    np.dot(rel_pos, direction) > 0.7
+                    for _, rel_pos, _ in zombie_data
                 )
                 if not blocked:
                     escape_score += 1
@@ -183,15 +215,15 @@ class CustomWrapper(BaseWrapper):
             # Calculate average zombie velocity (heading)
             zombie_velocities = [vel for _, _, vel in zombie_data]
             avg_velocity = np.mean(zombie_velocities, axis=0)
-            # Project onto agent's position to predict if zombies are moving towards agent
-            to_agent = agent_pos - np.array([0.5, 0.5])  # Center of the map
+            # Project onto vector to agent to predict if zombies are moving towards agent
+            to_agent = np.array([0.5, 0.5]) - agent_pos  # Vector from agent to center
             zombie_movement = np.dot(avg_velocity, to_agent)
         
         # 7. Calculate tactical position score
         tactical_score = 0.0
         if zombie_data:
-            # Prefer positions that are not surrounded by zombies
-            zombie_positions = [pos for _, pos, _ in zombie_data]
+            # Convert relative positions to absolute positions
+            zombie_positions = [agent_pos + pos for _, pos, _ in zombie_data]
             center = np.mean(zombie_positions, axis=0)
             # Score is higher when agent is not in the center of zombie cluster
             tactical_score = 1.0 - np.linalg.norm(agent_pos - center)
@@ -199,15 +231,39 @@ class CustomWrapper(BaseWrapper):
         # 8. Calculate shooting opportunity score
         shooting_score = 0.0
         if zombie_data:
-            # Find zombies that are in a good position to shoot
-            for dist, pos, _ in zombie_data:
+            good_shots = 0
+            for dist, rel_pos, _ in zombie_data:
                 if dist < 0.5:  # Only consider close zombies
-                    to_zombie = pos - agent_pos
-                    to_zombie = to_zombie / np.linalg.norm(to_zombie)
+                    to_zombie = rel_pos / np.linalg.norm(rel_pos)
                     alignment = np.dot(agent_heading, to_zombie)
                     if alignment > 0.8:  # Good alignment for shooting
-                        shooting_score += 1
-            shooting_score = min(shooting_score / len(zombie_data), 1.0)
+                        good_shots += 1
+            shooting_score = min(good_shots / len(zombie_data), 1.0)
+        
+        # 9. Calculate zombie heading alignment
+        zombie_heading_alignment = 0.0
+        if zombie_data:
+            alignments = []
+            for _, rel_pos, abs_heading in zombie_data:
+                to_agent = rel_pos / np.linalg.norm(rel_pos)
+                alignment = np.dot(abs_heading, to_agent)
+                alignments.append(alignment)
+            zombie_heading_alignment = np.mean(alignments) if alignments else 0.0
+        
+        # 10. Calculate knight protection score
+        knight_protection = 0.0
+        if knight_data:
+            # Calculate how well knights are positioned to protect the agent
+            protection_scores = []
+            for dist, rel_pos, _ in knight_data:
+                if dist < 0.3:  # Only consider close knights
+                    to_knight = rel_pos / np.linalg.norm(rel_pos)
+                    # Score based on how well the knight is positioned between agent and zombies
+                    if zombie_data:
+                        zombie_directions = [pos / np.linalg.norm(pos) for _, pos, _ in zombie_data]
+                        protection = max(np.dot(to_knight, -zombie_dir) for zombie_dir in zombie_directions)
+                        protection_scores.append(protection)
+            knight_protection = np.mean(protection_scores) if protection_scores else 0.0
         
         # Combine all features
         enhanced_features = [
@@ -218,7 +274,9 @@ class CustomWrapper(BaseWrapper):
             escape_score,
             zombie_movement,
             tactical_score,
-            shooting_score
+            shooting_score,
+            zombie_heading_alignment,
+            knight_protection
         ]
         
         # Combine original observation with enhanced features
@@ -227,10 +285,8 @@ class CustomWrapper(BaseWrapper):
         
         # Ensure the output has exactly 68 features
         if len(combined_features) < 68:
-            # Pad with zeros if too short
             combined_features = np.pad(combined_features, (0, 68 - len(combined_features)))
         elif len(combined_features) > 68:
-            # Truncate if too long
             combined_features = combined_features[:68]
             
         return combined_features
