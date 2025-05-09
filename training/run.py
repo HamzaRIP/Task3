@@ -423,7 +423,7 @@ def train_with_refined_grid_search(args):
         num_agents=args.num_agents,
         visual_observation=False,
         max_zombies=args.max_zombies,
-        max_cycles=1000
+        max_cycles=3000
     )
     
     # Apply custom wrapper
@@ -436,34 +436,38 @@ def train_with_refined_grid_search(args):
         "batch_size": [2048],
         
         # Learning rate: Mid-range learning rates performed best
-        "learning_rate": [0.0002, 0.0003, 0.0004, 0.0005],
+        "learning_rate": [0.0003],
         
         # Gamma: Both high values performed well
-        "gamma": [0.99, 0.995],
+        "gamma": [0.99],
         
         # Lambda: Both values can work well
-        "lambda_": [0.9, 0.95],
+        "lambda_": [0.9],
         
         # KL coefficient: 0.2 appeared in the best configuration
-        "kl_coeff": [0.15, 0.2, 0.25],
+        "kl_coeff": [0.2],
         
         # Clip parameter: Lower values (0.1) performed better
-        "clip_param": [0.05, 0.1, 0.15],
+        "clip_param": [0.1],
         
         # Value function clip parameter: Keep constant
         "vf_clip_param": [10.0],
         
         # Entropy coefficient: Lower values (0.005) performed better
-        "entropy_coeff": [0.003, 0.005, 0.007],
+        "entropy_coeff": [0.005, 0.01],
         
         # Number of SGD iterations: Both 10 and 15 performed well
-        "num_sgd_iter": [8, 10, 12],
+        "num_sgd_iter": [10],
         
         # Neural network architecture: Both performed well, with deeper slightly better
         "hidden_layers": [
+            [64, 64, 64],
             [256, 256, 128],
-            [256, 256, 192],
-            [384, 256, 128]
+            [512, 256, 128],
+            [512, 512, 128],
+            [512, 512, 256],
+            [512, 512, 512],
+            [1024, 1024, 1024],
         ]
     }
     
