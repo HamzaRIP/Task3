@@ -151,11 +151,22 @@ class CustomWrapper(BaseWrapper):
         sword_data = process_entity_rows(sword_rows)
         arrow_data = process_entity_rows(arrow_rows)
         
-        # 1. Calculate zombie threat level (weighted by distance and number)
+        # 1. Calculate zombie threat level (weighted by distance and bottom edge proximity)
         zombie_threat = 0.0
         if zombie_data:
-            distances = [d for d, _, _ in zombie_data]
-            zombie_threat = sum(1/d for d in distances if d < 0.5)  # Closer zombies contribute more to threat
+            threats = []
+            for dist, rel_pos, abs_heading in zombie_data:
+                # Base threat from distance
+                base_threat = 1.0 / dist if dist < 0.5 else 0.0
+                # Additional threat if near bottom edge
+                dist_to_bottom = 1.0 - (agent_pos[1] + rel_pos[1])
+                bottom_threat = 1.0 - dist_to_bottom
+                # Additional threat if moving towards bottom
+                moving_to_bottom = abs_heading[1] > 0
+                # Combine threats
+                total_threat = base_threat * (1.0 + bottom_threat) * (1.0 + moving_to_bottom)
+                threats.append(total_threat)
+            zombie_threat = sum(threats)
         
         # 2. Calculate safe space score (distance from nearest entity)
         all_distances = []
@@ -163,27 +174,26 @@ class CustomWrapper(BaseWrapper):
             all_distances.extend([d for d, _, _ in entity_data])
         safe_space = min(all_distances) if all_distances else 1.0
         
-        # 3. Calculate optimal shooting angle
+        # 3. Calculate optimal shooting angle with bottom edge priority
         optimal_angle = 0.0
         if zombie_data:
-            nearest_zombie = min(zombie_data, key=lambda x: x[0])
-            _, rel_pos, _ = nearest_zombie
-            to_zombie = rel_pos / np.linalg.norm(rel_pos)  # Normalize
-            optimal_angle = np.dot(agent_heading, to_zombie)
+            # Find best shooting target considering bottom edge proximity
+            best_target = None
+            best_score = -1
+            for dist, rel_pos, abs_heading in zombie_data:
+                to_zombie = rel_pos / np.linalg.norm(rel_pos)
+                alignment = np.dot(agent_heading, to_zombie)
+                # Add bottom edge consideration
+                dist_to_bottom = 1.0 - (agent_pos[1] + rel_pos[1])
+                bottom_priority = 1.0 - dist_to_bottom
+                # Combine factors
+                score = alignment * (1.0 + bottom_priority)
+                if score > best_score:
+                    best_score = score
+                    best_target = to_zombie
+            optimal_angle = np.dot(agent_heading, best_target) if best_target is not None else 0.0
         
-        # 4. Calculate zombie clustering (how spread out are the zombies)
-        zombie_clustering = 0.0
-        if len(zombie_data) > 1:
-            # Convert relative positions to absolute positions for clustering calculation
-            zombie_positions = [agent_pos + pos for _, pos, _ in zombie_data]
-            distances = []
-            for i in range(len(zombie_positions)):
-                for j in range(i+1, len(zombie_positions)):
-                    dist = np.linalg.norm(zombie_positions[i] - zombie_positions[j])
-                    distances.append(dist)
-            zombie_clustering = np.mean(distances) if distances else 1.0
-        
-        # 5. Calculate escape route score (how many directions are blocked)
+        # 4. Calculate escape route score with bottom edge consideration
         escape_score = 0.0
         if zombie_data:
             # Directions in the coordinate system where [0,0] is top-left
@@ -205,78 +215,53 @@ class CustomWrapper(BaseWrapper):
                     np.dot(rel_pos, direction) > 0.7
                     for _, rel_pos, _ in zombie_data
                 )
+                # Add penalty for moving towards bottom edge
+                if dy > 0:  # Moving down
+                    blocked = blocked or (agent_pos[1] > 0.7)  # Too close to bottom
                 if not blocked:
                     escape_score += 1
             escape_score /= 8.0  # Normalize to [0,1]
         
-        # 6. Calculate zombie movement prediction
-        zombie_movement = 0.0
+        # 5. Calculate strategic position score
+        strategic_position = 0.0
+        # Prefer positions that are:
+        # 1. Not too close to bottom edge
+        # 2. Not too close to top edge
+        # 3. Have good visibility of bottom area
+        dist_to_bottom = 1.0 - agent_pos[1]
+        dist_to_top = agent_pos[1]
+        visibility = 0.0
         if zombie_data:
-            # Calculate average zombie velocity (heading)
-            zombie_velocities = [vel for _, _, vel in zombie_data]
-            avg_velocity = np.mean(zombie_velocities, axis=0)
-            # Project onto vector to agent to predict if zombies are moving towards agent
-            to_agent = np.array([0.5, 0.5]) - agent_pos  # Vector from agent to center
-            zombie_movement = np.dot(avg_velocity, to_agent)
+            # Count zombies that are below the agent
+            zombies_below = sum(1 for _, rel_pos, _ in zombie_data if rel_pos[1] > 0)
+            visibility = zombies_below / len(zombie_data)
+        strategic_position = (dist_to_bottom * 0.4 + dist_to_top * 0.3 + visibility * 0.3)
         
-        # 7. Calculate tactical position score
-        tactical_score = 0.0
+        # 6. Calculate shooting priority score
+        shooting_priority = 0.0
         if zombie_data:
-            # Convert relative positions to absolute positions
-            zombie_positions = [agent_pos + pos for _, pos, _ in zombie_data]
-            center = np.mean(zombie_positions, axis=0)
-            # Score is higher when agent is not in the center of zombie cluster
-            tactical_score = 1.0 - np.linalg.norm(agent_pos - center)
-        
-        # 8. Calculate shooting opportunity score
-        shooting_score = 0.0
-        if zombie_data:
-            good_shots = 0
-            for dist, rel_pos, _ in zombie_data:
-                if dist < 0.5:  # Only consider close zombies
-                    to_zombie = rel_pos / np.linalg.norm(rel_pos)
-                    alignment = np.dot(agent_heading, to_zombie)
-                    if alignment > 0.8:  # Good alignment for shooting
-                        good_shots += 1
-            shooting_score = min(good_shots / len(zombie_data), 1.0)
-        
-        # 9. Calculate zombie heading alignment
-        zombie_heading_alignment = 0.0
-        if zombie_data:
-            alignments = []
-            for _, rel_pos, abs_heading in zombie_data:
-                to_agent = rel_pos / np.linalg.norm(rel_pos)
-                alignment = np.dot(abs_heading, to_agent)
-                alignments.append(alignment)
-            zombie_heading_alignment = np.mean(alignments) if alignments else 0.0
-        
-        # 10. Calculate knight protection score
-        knight_protection = 0.0
-        if knight_data:
-            # Calculate how well knights are positioned to protect the agent
-            protection_scores = []
-            for dist, rel_pos, _ in knight_data:
-                if dist < 0.3:  # Only consider close knights
-                    to_knight = rel_pos / np.linalg.norm(rel_pos)
-                    # Score based on how well the knight is positioned between agent and zombies
-                    if zombie_data:
-                        zombie_directions = [pos / np.linalg.norm(pos) for _, pos, _ in zombie_data]
-                        protection = max(np.dot(to_knight, -zombie_dir) for zombie_dir in zombie_directions)
-                        protection_scores.append(protection)
-            knight_protection = np.mean(protection_scores) if protection_scores else 0.0
+            priorities = []
+            for dist, rel_pos, abs_heading in zombie_data:
+                # Calculate distance to bottom edge
+                dist_to_bottom = 1.0 - (agent_pos[1] + rel_pos[1])
+                # Calculate if zombie is moving towards bottom
+                moving_to_bottom = abs_heading[1] > 0
+                # Calculate alignment with agent's heading
+                to_zombie = rel_pos / np.linalg.norm(rel_pos)
+                alignment = np.dot(agent_heading, to_zombie)
+                # Combine factors with higher weight for bottom edge proximity
+                priority = (1.0 - dist_to_bottom) * (1.0 + moving_to_bottom) * (1.0 + alignment)
+                priorities.append(priority)
+            shooting_priority = max(priorities) if priorities else 0.0
         
         # Combine all features
         enhanced_features = [
             zombie_threat,
             safe_space,
             optimal_angle,
-            zombie_clustering,
             escape_score,
-            zombie_movement,
-            tactical_score,
-            shooting_score,
-            zombie_heading_alignment,
-            knight_protection
+            strategic_position,
+            shooting_priority
         ]
         
         # Combine original observation with enhanced features
