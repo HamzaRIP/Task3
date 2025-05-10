@@ -158,8 +158,8 @@ class CustomWrapper(BaseWrapper):
             for dist, rel_pos, abs_heading in zombie_data:
                 # Base threat from distance
                 base_threat = 1.0 / dist if dist < 0.5 else 0.0
-                # Additional threat if near bottom edge
-                dist_to_bottom = 1.0 - (agent_pos[1] + rel_pos[1])
+                # Additional threat if near bottom edge (using relative position)
+                dist_to_bottom = 1.0 - rel_pos[1]
                 bottom_threat = 1.0 - dist_to_bottom
                 # Additional threat if moving towards bottom
                 moving_to_bottom = abs_heading[1] > 0
@@ -183,8 +183,8 @@ class CustomWrapper(BaseWrapper):
             for dist, rel_pos, abs_heading in zombie_data:
                 to_zombie = rel_pos / np.linalg.norm(rel_pos)
                 alignment = np.dot(agent_heading, to_zombie)
-                # Add bottom edge consideration
-                dist_to_bottom = 1.0 - (agent_pos[1] + rel_pos[1])
+                # Add bottom edge consideration using relative position
+                dist_to_bottom = 1.0 - rel_pos[1]
                 bottom_priority = 1.0 - dist_to_bottom
                 # Combine factors
                 score = alignment * (1.0 + bottom_priority)
@@ -232,7 +232,7 @@ class CustomWrapper(BaseWrapper):
         dist_to_top = agent_pos[1]
         visibility = 0.0
         if zombie_data:
-            # Count zombies that are below the agent
+            # Count zombies that are below the agent using relative positions
             zombies_below = sum(1 for _, rel_pos, _ in zombie_data if rel_pos[1] > 0)
             visibility = zombies_below / len(zombie_data)
         strategic_position = (dist_to_bottom * 0.4 + dist_to_top * 0.3 + visibility * 0.3)
@@ -242,8 +242,8 @@ class CustomWrapper(BaseWrapper):
         if zombie_data:
             priorities = []
             for dist, rel_pos, abs_heading in zombie_data:
-                # Calculate distance to bottom edge
-                dist_to_bottom = 1.0 - (agent_pos[1] + rel_pos[1])
+                # Calculate distance to bottom edge using relative position
+                dist_to_bottom = 1.0 - rel_pos[1]
                 # Calculate if zombie is moving towards bottom
                 moving_to_bottom = abs_heading[1] > 0
                 # Calculate alignment with agent's heading
@@ -335,7 +335,7 @@ def algo_config(id_env, env, policies, policies_to_train):
                             "input_dim": env.observation_space(x).shape[0],
                             "fcnet_use_batch_norm": True,  # Enable batch normalization
                             "fcnet_batch_norm_momentum": 0.99,  # Momentum for batch norm
-                            "fcnet_dropout": 0.3,  # Dropout rate of 20%
+                            "fcnet_dropout": 0.2,  # Dropout rate of 20%
                             "fcnet_dropout_training": True  # Enable dropout during training
                         }
                     )
