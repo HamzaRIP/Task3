@@ -335,7 +335,7 @@ def algo_config(id_env, env, policies, policies_to_train):
                             "input_dim": env.observation_space(x).shape[0],
                             "fcnet_use_batch_norm": True,  # Enable batch normalization
                             "fcnet_batch_norm_momentum": 0.99,  # Momentum for batch norm
-                            "fcnet_dropout": 0.2,  # Dropout rate of 20%
+                            "fcnet_dropout": 0.3,  # Dropout rate of 20%
                             "fcnet_dropout_training": True  # Enable dropout during training
                         }
                     )
