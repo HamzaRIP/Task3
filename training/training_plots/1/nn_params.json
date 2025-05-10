@@ -9,8 +9,8 @@
     "ENTROPY_COEFF": 0.005,
     "NUM_SGD_ITER": 10,
     "HIDDEN_LAYERS": [
-        256,
-        256,
-        128
+        32,
+        32,
+        32
     ]
 }

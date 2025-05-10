@@ -11,12 +11,93 @@
             "entropy_coeff": 0.005,
             "num_sgd_iter": 10,
             "hidden_layers": [
-                64,
-                64,
+                256,
+                256,
+                128
+            ]
+        },
+        "mean_reward": 70.2,
+        "session_dir": "training/training_plots/2"
+    },
+    {
+        "params": {
+            "batch_size": 2048,
+            "learning_rate": 0.0003,
+            "gamma": 0.99,
+            "lambda_": 0.9,
+            "kl_coeff": 0.2,
+            "clip_param": 0.1,
+            "vf_clip_param": 10.0,
+            "entropy_coeff": 0.005,
+            "num_sgd_iter": 10,
+            "hidden_layers": [
+                256,
+                256,
+                256
+            ]
+        },
+        "mean_reward": 71.8,
+        "session_dir": "training/training_plots/3"
+    },
+    {
+        "params": {
+            "batch_size": 2048,
+            "learning_rate": 0.0003,
+            "gamma": 0.99,
+            "lambda_": 0.9,
+            "kl_coeff": 0.2,
+            "clip_param": 0.1,
+            "vf_clip_param": 10.0,
+            "entropy_coeff": 0.005,
+            "num_sgd_iter": 10,
+            "hidden_layers": [
+                512,
+                256,
+                128
+            ]
+        },
+        "mean_reward": 69.2,
+        "session_dir": "training/training_plots/4"
+    },
+    {
+        "params": {
+            "batch_size": 2048,
+            "learning_rate": 0.0003,
+            "gamma": 0.99,
+            "lambda_": 0.9,
+            "kl_coeff": 0.2,
+            "clip_param": 0.1,
+            "vf_clip_param": 10.0,
+            "entropy_coeff": 0.005,
+            "num_sgd_iter": 10,
+            "hidden_layers": [
+                512,
+                256,
+                128,
                 64
             ]
         },
-        "mean_reward": 75.1,
-        "session_dir": "training/training_plots/27"
+        "mean_reward": 36.5,
+        "session_dir": "training/training_plots/5"
+    },
+    {
+        "params": {
+            "batch_size": 2048,
+            "learning_rate": 0.0003,
+            "gamma": 0.99,
+            "lambda_": 0.9,
+            "kl_coeff": 0.2,
+            "clip_param": 0.1,
+            "vf_clip_param": 10.0,
+            "entropy_coeff": 0.005,
+            "num_sgd_iter": 10,
+            "hidden_layers": [
+                512,
+                512,
+                512
+            ]
+        },
+        "mean_reward": 55.5,
+        "session_dir": "training/training_plots/6"
     }
 ]

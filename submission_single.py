@@ -75,7 +75,7 @@ VF_CLIP_PARAM = 10.0    # Value function clipping parameter, limits how much the
 ENTROPY_COEFF = 0.005   # Coeff for entropy bonus, encourages exploration by rewarding policies with higher action entropy.
 NUM_SGD_ITER = 10      # No. SGD passes over the training data, determines how many times each batch is reused for optimization.
 
-HIDDEN_LAYERS = [256, 256, 128]
+HIDDEN_LAYERS = [512, 512, 512]
 
 class CustomWrapper(BaseWrapper):
     def __init__(self, env):
@@ -335,7 +335,7 @@ def algo_config(id_env, env, policies, policies_to_train):
                             "input_dim": env.observation_space(x).shape[0],
                             "fcnet_use_batch_norm": True,  # Enable batch normalization
                             "fcnet_batch_norm_momentum": 0.99,  # Momentum for batch norm
-                            "fcnet_dropout": 0.2,  # Dropout rate of 20%
+                            "fcnet_dropout": 0.3,  # Dropout rate of 20%
                             "fcnet_dropout_training": True  # Enable dropout during training
                         }
                     )
@@ -572,7 +572,7 @@ if __name__ == "__main__":
         num_agents=num_agents,
         visual_observation=visual_observation,
         max_zombies=max_zombies,
-        max_cycles=1000
+        max_cycles=2500
     )
     
     # Apply custom wrapper
