@@ -76,7 +76,7 @@ VF_CLIP_PARAM = 10.0    # Value function clipping parameter, limits how much the
 ENTROPY_COEFF = 0.005   # Coeff for entropy bonus, encourages exploration by rewarding policies with higher action entropy.
 NUM_SGD_ITER = 10      # No. SGD passes over the training data, determines how many times each batch is reused for optimization.
 
-HIDDEN_LAYERS = [256, 256, 128]
+HIDDEN_LAYERS = [512, 512, 512]  # Updated to match submission_single.py
 
 class CustomWrapper(BaseWrapper):
     def __init__(self, env):
@@ -85,28 +85,203 @@ class CustomWrapper(BaseWrapper):
         self._initialized = False
         
         # Get environment parameters from the environment's configuration
-        self.max_zombies = 4  # Default value from create_environment
-        self.num_archers = 2  # Updated for multi-agent
+        self.max_zombies = env.unwrapped.max_zombies if hasattr(env.unwrapped, 'max_zombies') else 4
+        self.num_archers = env.unwrapped.num_archers if hasattr(env.unwrapped, 'num_archers') else 2
+        self.num_knights = env.unwrapped.num_knights if hasattr(env.unwrapped, 'num_knights') else 0
+        self.max_arrows = env.unwrapped.max_arrows if hasattr(env.unwrapped, 'max_arrows') else 10
 
     def observation_space(self, agent: AgentID) -> gymnasium.spaces.Space:
         if not self._initialized:
             # Initialize observation space on first access
             original_space = spaces.flatten_space(self.env.observation_space(agent))
-            self._observation_space = original_space
+            # The model expects 68 input features
+            self._observation_space = spaces.Box(
+                low=-np.inf,
+                high=np.inf,
+                shape=(68,),  # Fixed size to match trained model
+                dtype=np.float32
+            )
             self._initialized = True
         return self._observation_space
+
+    def _process_observation(self, obs):
+        # First row is current agent
+        current_agent = obs[0]
+        agent_pos = current_agent[1:3]  # Normalized position [0,0] is top-left
+        agent_heading = current_agent[3:5]  # Unit vector heading
+        
+        # Calculate indices for different entity types
+        num_archers = self.num_archers
+        num_knights = self.num_knights
+        num_swords = num_knights  # As specified
+        max_arrows = self.max_arrows
+        max_zombies = self.max_zombies
+        
+        # Calculate row indices
+        archer_start = 1
+        archer_end = archer_start + num_archers
+        knight_start = archer_end
+        knight_end = knight_start + num_knights
+        sword_start = knight_end
+        sword_end = sword_start + num_swords
+        arrow_start = sword_end
+        arrow_end = arrow_start + max_arrows
+        zombie_start = arrow_end
+        zombie_end = zombie_start + max_zombies
+        
+        # Extract entity rows
+        archer_rows = obs[archer_start:archer_end]
+        knight_rows = obs[knight_start:knight_end]
+        sword_rows = obs[sword_start:sword_end]
+        arrow_rows = obs[arrow_start:arrow_end]
+        zombie_rows = obs[zombie_start:zombie_end]
+        
+        def process_entity_rows(rows):
+            entities = []
+            for row in rows:
+                if row[0] > 0:  # Check if entity exists
+                    distance = row[0]  # Absolute distance
+                    rel_pos = row[1:3]  # Relative position to agent
+                    abs_heading = row[3:5]  # Absolute heading
+                    entities.append((distance, rel_pos, abs_heading))
+            return entities
+        
+        zombie_data = process_entity_rows(zombie_rows)
+        archer_data = process_entity_rows(archer_rows)
+        knight_data = process_entity_rows(knight_rows)
+        sword_data = process_entity_rows(sword_rows)
+        arrow_data = process_entity_rows(arrow_rows)
+        
+        # 1. Calculate zombie threat level (weighted by distance and bottom edge proximity)
+        zombie_threat = 0.0
+        if zombie_data:
+            threats = []
+            for dist, rel_pos, abs_heading in zombie_data:
+                # Base threat from distance
+                base_threat = 1.0 / dist if dist < 0.5 else 0.0
+                # Additional threat if near bottom edge (using relative position)
+                dist_to_bottom = 1.0 - rel_pos[1]
+                bottom_threat = 1.0 - dist_to_bottom
+                # Additional threat if moving towards bottom
+                moving_to_bottom = abs_heading[1] > 0
+                # Combine threats
+                total_threat = base_threat * (1.0 + bottom_threat) * (1.0 + moving_to_bottom)
+                threats.append(total_threat)
+            zombie_threat = sum(threats)
+        
+        # 2. Calculate safe space score (distance from nearest entity)
+        all_distances = []
+        for entity_data in [zombie_data, archer_data, knight_data, sword_data, arrow_data]:
+            all_distances.extend([d for d, _, _ in entity_data])
+        safe_space = min(all_distances) if all_distances else 1.0
+        
+        # 3. Calculate optimal shooting angle with bottom edge priority
+        optimal_angle = 0.0
+        if zombie_data:
+            # Find best shooting target considering bottom edge proximity
+            best_target = None
+            best_score = -1
+            for dist, rel_pos, abs_heading in zombie_data:
+                to_zombie = rel_pos / np.linalg.norm(rel_pos)
+                alignment = np.dot(agent_heading, to_zombie)
+                # Add bottom edge consideration using relative position
+                dist_to_bottom = 1.0 - rel_pos[1]
+                bottom_priority = 1.0 - dist_to_bottom
+                # Combine factors
+                score = alignment * (1.0 + bottom_priority)
+                if score > best_score:
+                    best_score = score
+                    best_target = to_zombie
+            optimal_angle = np.dot(agent_heading, best_target) if best_target is not None else 0.0
+        
+        # 4. Calculate escape route score with bottom edge consideration
+        escape_score = 0.0
+        if zombie_data:
+            # Directions in the coordinate system where [0,0] is top-left
+            directions = [
+                (1,0),   # right
+                (1,1),   # down-right
+                (0,1),   # down
+                (-1,1),  # down-left
+                (-1,0),  # left
+                (-1,-1), # up-left
+                (0,-1),  # up
+                (1,-1)   # up-right
+            ]
+            for dx, dy in directions:
+                direction = np.array([dx, dy])
+                direction = direction / np.linalg.norm(direction)
+                # Check if any zombie is in this direction using relative positions
+                blocked = any(
+                    np.dot(rel_pos, direction) > 0.7
+                    for _, rel_pos, _ in zombie_data
+                )
+                # Add penalty for moving towards bottom edge
+                if dy > 0:  # Moving down
+                    blocked = blocked or (agent_pos[1] > 0.7)  # Too close to bottom
+                if not blocked:
+                    escape_score += 1
+            escape_score /= 8.0  # Normalize to [0,1]
+        
+        # 5. Calculate strategic position score
+        strategic_position = 0.0
+        # Prefer positions that are:
+        # 1. Not too close to bottom edge
+        # 2. Not too close to top edge
+        # 3. Have good visibility of bottom area
+        dist_to_bottom = 1.0 - agent_pos[1]
+        dist_to_top = agent_pos[1]
+        visibility = 0.0
+        if zombie_data:
+            # Count zombies that are below the agent using relative positions
+            zombies_below = sum(1 for _, rel_pos, _ in zombie_data if rel_pos[1] > 0)
+            visibility = zombies_below / len(zombie_data)
+        strategic_position = (dist_to_bottom * 0.4 + dist_to_top * 0.3 + visibility * 0.3)
+        
+        # 6. Calculate shooting priority score
+        shooting_priority = 0.0
+        if zombie_data:
+            priorities = []
+            for dist, rel_pos, abs_heading in zombie_data:
+                # Calculate distance to bottom edge using relative position
+                dist_to_bottom = 1.0 - rel_pos[1]
+                # Calculate if zombie is moving towards bottom
+                moving_to_bottom = abs_heading[1] > 0
+                # Calculate alignment with agent's heading
+                to_zombie = rel_pos / np.linalg.norm(rel_pos)
+                alignment = np.dot(agent_heading, to_zombie)
+                # Combine factors with higher weight for bottom edge proximity
+                priority = (1.0 - dist_to_bottom) * (1.0 + moving_to_bottom) * (1.0 + alignment)
+                priorities.append(priority)
+            shooting_priority = max(priorities) if priorities else 0.0
+        
+        # Combine all features
+        enhanced_features = [
+            zombie_threat,
+            safe_space,
+            optimal_angle,
+            escape_score,
+            strategic_position,
+            shooting_priority
+        ]
+        
+        # Combine original observation with enhanced features
+        original_features = obs.flatten()
+        combined_features = np.concatenate([original_features, enhanced_features])
+        
+        # Ensure the output has exactly 68 features
+        if len(combined_features) < 68:
+            combined_features = np.pad(combined_features, (0, 68 - len(combined_features)))
+        elif len(combined_features) > 68:
+            combined_features = combined_features[:68]
+            
+        return combined_features
 
     def observe(self, agent: AgentID) -> ObsType | None:
         obs = super().observe(agent)
         if obs is None:
             return None
-        return obs.flatten()  # Just flatten the observation without additional processing
-
-    def step(self, action):
-        """
-        Step the environment.
-        """
-        return self.env.step(action)
+        return self._process_observation(obs)
 
 class CustomPredictFunction(Callable):
     """
@@ -161,6 +336,10 @@ def algo_config(id_env, env, policies, policies_to_train):
                             "fcnet_hiddens": HIDDEN_LAYERS,
                             "fcnet_activation": "relu",
                             "input_dim": env.observation_space(x).shape[0],
+                            "fcnet_use_batch_norm": True,  # Enable batch normalization
+                            "fcnet_batch_norm_momentum": 0.99,  # Momentum for batch norm
+                            "fcnet_dropout": 0.3,  # Dropout rate of 30%
+                            "fcnet_dropout_training": True,  # Enable dropout during training
                             # IPPO-specific model settings
                             "use_centralized_critic": True,
                             "centralized_critic_obs_dim": env.observation_space(x).shape[0] * len(policies),
@@ -439,7 +618,7 @@ if __name__ == "__main__":
         num_agents=num_agents,
         visual_observation=visual_observation,
         max_zombies=max_zombies,
-        max_cycles=1000
+        max_cycles=2500  # Increased from 1000 to match submission_single.py
     )
     
     # Apply custom wrapper
@@ -454,7 +633,7 @@ if __name__ == "__main__":
     algo = train_archer_agent(
         env, 
         checkpoint_path, 
-        max_iterations=3000, 
+        max_iterations=500,  # Reduced from 3000 to match submission_single.py
         plot_dir=plot_dir,
         live_plot=not args.no_live_plot
     )
