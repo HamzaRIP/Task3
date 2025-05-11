@@ -625,8 +625,8 @@ if __name__ == "__main__":
     env = CustomWrapper(env)
     
     # Set up checkpoint path and plot directory
-    checkpoint_path = str(Path("results").resolve())
-    plot_dir = str(Path("training_plots").resolve())
+    checkpoint_path = str(Path("results_multi").resolve())
+    plot_dir = str(Path("training_multi").resolve())
     
     # Train the agents
     print("Training agents...")

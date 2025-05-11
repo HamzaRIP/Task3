@@ -10,7 +10,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
 from pathlib import Path
-from submission_single import CustomPredictFunction, CustomWrapper, train_archer_agent, evaluate_agent, compare_with_baselines
+from submission_multi import CustomPredictFunction, CustomWrapper, train_archer_agent, evaluate_agent, compare_with_baselines
 from utils import create_environment
 import matplotlib.pyplot as plt
 import json
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # Import the NN parameters 
 # (assuming they're defined in agent_implementation.py - adjust import as needed)
 try:
-    from submission_single import (
+    from submission_multi import (
         BATCH_SIZE, LEARNING_RATE, GAMMA, LAMBDA, KL_COEFF, 
         CLIP_PARAM, VF_CLIP_PARAM, ENTROPY_COEFF, NUM_SGD_ITER, 
         HIDDEN_LAYERS
@@ -129,7 +129,7 @@ def train_with_tune(args):
     # Define the training function for Tune
     def train_function(config):
         # Override the global parameters with the ones from Tune
-        from submission_single import (
+        from submission_multi import (
             BATCH_SIZE, LEARNING_RATE, GAMMA, LAMBDA, KL_COEFF, 
             CLIP_PARAM, VF_CLIP_PARAM, ENTROPY_COEFF, NUM_SGD_ITER, 
             HIDDEN_LAYERS
@@ -329,7 +329,7 @@ def train_with_grid_search(args):
             print(f"  {k}: {v}")
         
         # Override the global parameters
-        from submission_single import (
+        from submission_multi import (
             BATCH_SIZE, LEARNING_RATE, GAMMA, LAMBDA, KL_COEFF, 
             CLIP_PARAM, VF_CLIP_PARAM, ENTROPY_COEFF, NUM_SGD_ITER, 
             HIDDEN_LAYERS
@@ -522,7 +522,7 @@ def train_with_refined_grid_search(args):
             print(f"  {k}: {v}")
         
         # Override the global parameters
-        from submission_single import (
+        from submission_multi import (
             BATCH_SIZE, LEARNING_RATE, GAMMA, LAMBDA, KL_COEFF, 
             CLIP_PARAM, VF_CLIP_PARAM, ENTROPY_COEFF, NUM_SGD_ITER, 
             HIDDEN_LAYERS
@@ -608,13 +608,13 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Train and visualize Knights vs Archers agent')
     parser.add_argument('--max-iterations', type=int, default=500, 
                         help='Maximum number of training iterations')
-    parser.add_argument('--num-agents', type=int, default=1,
+    parser.add_argument('--num-agents', type=int, default=2,
                         help='Number of archer agents')
     parser.add_argument('--max-zombies', type=int, default=10,
                         help='Maximum number of zombies')
-    parser.add_argument('--checkpoint-dir', type=str, default='results',
+    parser.add_argument('--checkpoint-dir', type=str, default='results_multi',
                         help='Directory to save checkpoints')
-    parser.add_argument('--plot-dir', type=str, default='training/training_plots',
+    parser.add_argument('--plot-dir', type=str, default='training_multi',
                         help='Base directory for training plots')
     parser.add_argument('--eval-episodes', type=int, default=10,
                         help='Number of episodes for evaluation')
@@ -651,7 +651,7 @@ def main():
     if args.tune:
         best_config = train_with_tune(args)
         # Update the global parameters with the best ones found
-        from submission_single import (
+        from submission_multi import (
             BATCH_SIZE, LEARNING_RATE, GAMMA, LAMBDA, KL_COEFF, 
             CLIP_PARAM, VF_CLIP_PARAM, ENTROPY_COEFF, NUM_SGD_ITER, 
             HIDDEN_LAYERS
@@ -670,7 +670,7 @@ def main():
     elif args.grid_search:
         best_config = train_with_grid_search(args)
         # Update the global parameters with the best ones found
-        from submission_single import (
+        from submission_multi import (
             BATCH_SIZE, LEARNING_RATE, GAMMA, LAMBDA, KL_COEFF, 
             CLIP_PARAM, VF_CLIP_PARAM, ENTROPY_COEFF, NUM_SGD_ITER, 
             HIDDEN_LAYERS
@@ -689,7 +689,7 @@ def main():
     elif args.refined_grid_search:
         best_config = train_with_refined_grid_search(args)
         # Update the global parameters with the best ones found
-        from submission_single import (
+        from submission_multi import (
             BATCH_SIZE, LEARNING_RATE, GAMMA, LAMBDA, KL_COEFF, 
             CLIP_PARAM, VF_CLIP_PARAM, ENTROPY_COEFF, NUM_SGD_ITER, 
             HIDDEN_LAYERS
@@ -766,7 +766,13 @@ def main():
     # Evaluate the trained agent
     print("\nEvaluating trained agent...")
     trained_agent = CustomPredictFunction(env)
-    mean_reward = evaluate_agent(env, num_episodes=args.eval_episodes)
+    evaluation_results = evaluate_agent(env, num_episodes=args.eval_episodes)
+    
+    # Print individual archer rewards
+    print("\nIndividual Archer Rewards:")
+    for agent, reward in evaluation_results["agent_rewards"].items():
+        print(f"{agent}: {reward}")
+    print(f"Overall Mean Reward: {evaluation_results['overall_reward']}")
     
     # Compare with baselines
     print("\nComparing with baselines...")
@@ -778,22 +784,37 @@ def main():
         print(f"{strategy}: {reward}")
     
     # Generate and display final results plot
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(12, 6))
+    
+    # Plot individual archer rewards
+    plt.subplot(1, 2, 1)
+    agents = list(evaluation_results["agent_rewards"].keys())
+    rewards = [evaluation_results["agent_rewards"][a] for a in agents]
+    plt.bar(agents, rewards)
+    plt.ylabel('Mean Reward')
+    plt.title('Individual Archer Rewards')
+    
+    # Plot strategy comparison
+    plt.subplot(1, 2, 2)
     strategies = list(baseline_results.keys())
     rewards = [baseline_results[s] for s in strategies]
-    
     plt.bar(strategies, rewards)
     plt.ylabel('Mean Reward')
     plt.title('Strategy Comparison')
-    plt.savefig(f"{plot_dir}/strategy_comparison.png")
     
-    # Save session configuration
+    plt.tight_layout()
+    plt.savefig(f"{plot_dir}/evaluation_results.png")
+    
+    # Save session configuration with individual rewards
     with open(f"{plot_dir}/session_config.txt", "w") as f:
         f.write(f"Max iterations: {args.max_iterations}\n")
         f.write(f"Number of agents: {args.num_agents}\n")
         f.write(f"Max zombies: {args.max_zombies}\n")
         f.write(f"Evaluation episodes: {args.eval_episodes}\n")
-        f.write(f"Final mean reward: {mean_reward}\n")
+        f.write("\nIndividual Archer Rewards:\n")
+        for agent, reward in evaluation_results["agent_rewards"].items():
+            f.write(f"{agent}: {reward}\n")
+        f.write(f"Overall mean reward: {evaluation_results['overall_reward']}\n")
         f.write("\nBaseline comparison:\n")
         for strategy, reward in baseline_results.items():
             f.write(f"{strategy}: {reward}\n")
