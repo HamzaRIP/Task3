@@ -74,12 +74,14 @@ def main(argv=None):
                               'rllib_student_code_to_submit.'))
     parser.add_argument('--screen', '-s', action='store_true',
                         help='Set render mode to human (show game)')
+    parser.add_argument('--num-agents', '-n', type=int, default=1,
+                        help='Number of agents in the environment (default: 1)')
     args = parser.parse_args(argv)
 
     logger.setLevel(max(logging.INFO - 10 * (args.verbose - args.quiet), logging.DEBUG))
     logger.addHandler(logging.StreamHandler(sys.stdout))
 
-    num_agents = 1
+    num_agents = args.num_agents
     visual_observation = False
     render_mode = "human" if args.screen else None # "human" or None
     logger.info(f'Show game: {render_mode}')
