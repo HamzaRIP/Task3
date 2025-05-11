@@ -148,9 +148,7 @@ class CustomWrapper(BaseWrapper):
         
         zombie_data = process_entity_rows(zombie_rows)
         archer_data = process_entity_rows(archer_rows)
-        knight_data = process_entity_rows(knight_rows)
-        sword_data = process_entity_rows(sword_rows)
-        arrow_data = process_entity_rows(arrow_rows)
+        # knight_data, sword_data, arrow_data are not used in cleaned-up features
         
         # 1. Calculate zombie threat level (weighted by distance and bottom edge proximity)
         zombie_threat = 0.0
@@ -171,98 +169,50 @@ class CustomWrapper(BaseWrapper):
         
         # 2. Calculate safe space score (distance from nearest entity)
         all_distances = []
-        for entity_data in [zombie_data, archer_data, knight_data, sword_data, arrow_data]:
+        for entity_data in [zombie_data, archer_data]:
             all_distances.extend([d for d, _, _ in entity_data])
         safe_space = min(all_distances) if all_distances else 1.0
         
-        # 3. Calculate optimal shooting angle with bottom edge priority
-        optimal_angle = 0.0
-        if zombie_data:
-            # Find best shooting target considering bottom edge proximity
-            best_target = None
-            best_score = -1
-            for dist, rel_pos, abs_heading in zombie_data:
-                to_zombie = rel_pos / np.linalg.norm(rel_pos)
-                alignment = np.dot(agent_heading, to_zombie)
-                # Add bottom edge consideration using relative position
-                dist_to_bottom = 1.0 - rel_pos[1]
-                bottom_priority = 1.0 - dist_to_bottom
-                # Combine factors
-                score = alignment * (1.0 + bottom_priority)
-                if score > best_score:
-                    best_score = score
-                    best_target = to_zombie
-            optimal_angle = np.dot(agent_heading, best_target) if best_target is not None else 0.0
+        # 3. Calculate agent coordination score (mean teammate distance)
+        coordination_score = 0.0
+        if archer_data:
+            archer_distances = [d for d, _, _ in archer_data]
+            avg_archer_distance = sum(archer_distances) / len(archer_distances)
+            # Prefer moderate distances (not too close, not too far)
+            coordination_score = 1.0 - abs(avg_archer_distance - 0.3)  # 0.3 is ideal distance
         
-        # 4. Calculate escape route score with bottom edge consideration
-        escape_score = 0.0
-        if zombie_data:
-            # Directions in the coordinate system where [0,0] is top-left
-            directions = [
-                (1,0),   # right
-                (1,1),   # down-right
-                (0,1),   # down
-                (-1,1),  # down-left
-                (-1,0),  # left
-                (-1,-1), # up-left
-                (0,-1),  # up
-                (1,-1)   # up-right
-            ]
-            for dx, dy in directions:
-                direction = np.array([dx, dy])
-                direction = direction / np.linalg.norm(direction)
-                # Check if any zombie is in this direction using relative positions
-                blocked = any(
-                    np.dot(rel_pos, direction) > 0.7
-                    for _, rel_pos, _ in zombie_data
-                )
-                # Add penalty for moving towards bottom edge
-                if dy > 0:  # Moving down
-                    blocked = blocked or (agent_pos[1] > 0.7)  # Too close to bottom
-                if not blocked:
-                    escape_score += 1
-            escape_score /= 8.0  # Normalize to [0,1]
+        # 4. Calculate role specialization score (fraction of zombies on agent's side)
+        role_score = 0.0
+        if archer_data and zombie_data:
+            is_left_side = agent_pos[0] < 0.5
+            left_zombies = sum(1 for _, rel_pos, _ in zombie_data if rel_pos[0] < 0)
+            right_zombies = len(zombie_data) - left_zombies
+            if is_left_side:
+                role_score = left_zombies / len(zombie_data)
+            else:
+                role_score = right_zombies / len(zombie_data)
         
-        # 5. Calculate strategic position score
-        strategic_position = 0.0
-        # Prefer positions that are:
-        # 1. Not too close to bottom edge
-        # 2. Not too close to top edge
-        # 3. Have good visibility of bottom area
-        dist_to_bottom = 1.0 - agent_pos[1]
-        dist_to_top = agent_pos[1]
-        visibility = 0.0
+        # 5. Nearest teammate distance
+        if archer_data:
+            teammate_dists = [np.linalg.norm(rel_pos) for _, rel_pos, _ in archer_data]
+            nearest_teammate_dist = min(teammate_dists)
+        else:
+            nearest_teammate_dist = 0.0
+        # 6. Nearest zombie distance
         if zombie_data:
-            # Count zombies that are below the agent using relative positions
-            zombies_below = sum(1 for _, rel_pos, _ in zombie_data if rel_pos[1] > 0)
-            visibility = zombies_below / len(zombie_data)
-        strategic_position = (dist_to_bottom * 0.4 + dist_to_top * 0.3 + visibility * 0.3)
-        
-        # 6. Calculate shooting priority score
-        shooting_priority = 0.0
-        if zombie_data:
-            priorities = []
-            for dist, rel_pos, abs_heading in zombie_data:
-                # Calculate distance to bottom edge using relative position
-                dist_to_bottom = 1.0 - rel_pos[1]
-                # Calculate if zombie is moving towards bottom
-                moving_to_bottom = abs_heading[1] > 0
-                # Calculate alignment with agent's heading
-                to_zombie = rel_pos / np.linalg.norm(rel_pos)
-                alignment = np.dot(agent_heading, to_zombie)
-                # Combine factors with higher weight for bottom edge proximity
-                priority = (1.0 - dist_to_bottom) * (1.0 + moving_to_bottom) * (1.0 + alignment)
-                priorities.append(priority)
-            shooting_priority = max(priorities) if priorities else 0.0
-        
-        # Combine all features
+            zombie_dists = [np.linalg.norm(rel_pos) for _, rel_pos, _ in zombie_data]
+            nearest_zombie_dist = min(zombie_dists)
+        else:
+            nearest_zombie_dist = 0.0
+
+        # Combine all features (cleaned-up)
         enhanced_features = [
             zombie_threat,
             safe_space,
-            optimal_angle,
-            escape_score,
-            strategic_position,
-            shooting_priority
+            coordination_score,
+            role_score,
+            nearest_teammate_dist,
+            nearest_zombie_dist
         ]
         
         # Combine original observation with enhanced features
@@ -291,8 +241,8 @@ class CustomPredictFunction(Callable):
     def __init__(self, env):
         # Get the absolute path to the module directory
         package_directory = os.path.dirname(os.path.abspath(__file__))
-        # Load the trained model from checkpoint using absolute path
-        checkpoint_path = os.path.join(package_directory, "results", "learner_group", "learner", "rl_module")
+        results_dir = os.getenv("RESULTS_DIR", "results_multi")
+        checkpoint_path = os.path.join(package_directory, results_dir, "learner_group", "learner", "rl_module")
         self.modules = MultiRLModule.from_checkpoint(checkpoint_path)
     
     def __call__(self, observation, agent, *args, **kwargs):
@@ -633,7 +583,7 @@ if __name__ == "__main__":
     algo = train_archer_agent(
         env, 
         checkpoint_path, 
-        max_iterations=500,  # Reduced from 3000 to match submission_single.py
+        max_iterations=1000,  # Reduced from 3000 to match submission_single.py
         plot_dir=plot_dir,
         live_plot=not args.no_live_plot
     )
