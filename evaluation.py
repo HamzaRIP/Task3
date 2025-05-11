@@ -79,7 +79,7 @@ def main(argv=None):
     logger.setLevel(max(logging.INFO - 10 * (args.verbose - args.quiet), logging.DEBUG))
     logger.addHandler(logging.StreamHandler(sys.stdout))
 
-    num_agents = 2
+    num_agents = 1
     visual_observation = False
     render_mode = "human" if args.screen else None # "human" or None
     logger.info(f'Show game: {render_mode}')
